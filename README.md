@@ -1,3 +1,7 @@
+[![make.fun token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/maezageryan-del/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/maezageryan-del/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01)
+
 # Launch Radar
 
 A token launch radar for make.fun's token-radar-01. It reads the sealed DefiLlama snapshot,
