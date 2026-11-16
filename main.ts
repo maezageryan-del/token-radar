@@ -3,10 +3,12 @@
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits
 // the comps size curve in lib/model.ts to the snapshot's own tokenised protocols, tests the fit
-// blind, reads every pre-token protocol's implied value off the curve, and writes the ranked
-// board to /output/board.json. It then writes the dashboard's data to /output/data.js, copies
-// this repository's dashboard/ and screenshots/ to /output, and writes /output/dossier.json,
-// the summary the judge reads, with the vendored make.fun library.
+// three ways (a two-fold blind split, five-fold cross-validation, and a time split that fits on
+// the older half of the comps and prices the newer), reads every pre-token protocol's implied
+// value off the curve with an honest band and a local cross-check beside it, and writes the
+// ranked board to /output/board.json. It then writes the dashboard's data to /output/data.js,
+// copies this repository's dashboard/ and screenshots/ to /output, and writes
+// /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html,
 // dashboard/app.css and dashboard/app.js read the data.js this program writes beside it, and the
@@ -91,6 +93,7 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 const counts = radar.verdict_counts;
 process.stdout.write(
   `launch radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `launch radar: curve fitted on ${radar.curve.comps} tokenised protocols (slope ${radar.curve.slope}, median cap/TVL ${radar.curve.median_ratio}); blind test on ${radar.blind.tested}: median miss x${radar.blind.median_multiple}, ${radar.blind.within_2x_pct}% within x2\n` +
+    `launch radar: curve fitted on ${radar.curve.comps} tokenised protocols (slope ${radar.curve.slope}, median cap/TVL ${radar.curve.median_ratio}); blind test on ${radar.validation.blind.tested}: median miss x${radar.validation.blind.median_multiple}, ${radar.validation.blind.within_2x_pct}% within x2\n` +
+    `launch radar: cross-validation on ${radar.validation.cross.tested}: median miss x${radar.validation.cross.median_multiple}, ${radar.validation.cross.within_2x_pct}% within x2; time-split on ${radar.validation.time.tested}: median miss x${radar.validation.time.median_multiple}, ${radar.validation.time.within_2x_pct}% within x2\n` +
     `launch radar: verdicts ${counts.farm} farm, ${counts.thin} thin, ${counts.skip} skip; wrote board.json, data.js, dashboard (${dashFiles.length} files), screenshots (${shots.length} images) and dossier.json to ${out}\n`,
 );

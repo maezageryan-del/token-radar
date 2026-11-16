@@ -147,7 +147,7 @@
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', null, DATA.watchlist_size + ' / ' + DATA.watchlist_size)),
         el('div', { class: 'fact' }, el('span', { text: 'Rows ranked' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Verdicts: farm' }), el('b', null, el('i', { text: String(c.farm) }), ' farm · ' + c.thin + ' thin')),
-        el('div', { class: 'fact' }, el('span', { text: 'Blind test, median miss' }), el('b', { text: 'x' + DATA.blind.median_multiple.toFixed(2) }))
+        el('div', { class: 'fact' }, el('span', { text: 'Time-split test, median miss' }), el('b', { text: 'x' + DATA.validation.time.median_multiple.toFixed(2) }))
       )
     );
   }
@@ -160,13 +160,94 @@
         el('h2', { text: 'How the number is made' }),
         el('p', { text: 'The snapshot\'s own ' + curve.comps + ' tokenised protocols are the only guide: they are what the market actually paid for TVL like this (median ' + curve.median_ratio.toFixed(2) + 'x TVL). A size curve is fitted to them — log10(market cap) on log10(TVL), slope ' + curve.slope.toFixed(2) + ' — with a per-category correction, and each pre-token protocol is read off it, moved by its seven-day growth and by how long it has run with no token. Pass-through staking books are left out of the fit: their TVL is other people\'s assets, and their tokens price a fee sliver, not the pile.' }),
         el('div', { class: 'formula', text: 'implied = 10^(' + curve.intercept.toFixed(2) + ' + ' + curve.slope.toFixed(2) + ' x log10 TVL) x category x (1 + clamp(7d, ' + m.growth_floor + ', ' + m.growth_cap + ') x ' + m.growth_weight + ') x maturity(age)' }),
-        el('p', { text: 'Tested blind before it is trusted: the comps are split in two by slug, each half priced by a curve fitted on the other half alone. Median miss x' + DATA.blind.median_multiple.toFixed(2) + '; ' + DATA.blind.within_2x_pct + '% of blind readings land within x2 of the real market cap. Wide — which is why every row shows its working, and why the board ranks rather than promises.' })
+        el('p', { text: 'Tested blind three ways before it is trusted. Split in two by slug, each half priced by a curve fitted on the other alone: median miss x' + DATA.validation.blind.median_multiple.toFixed(2) + ', ' + DATA.validation.blind.within_2x_pct + '% within x2. Five-fold cross-validation, every comp read exactly once blind: x' + DATA.validation.cross.median_multiple.toFixed(2) + ', ' + DATA.validation.cross.within_2x_pct + '% within x2. And a time split — fitted on the older half of the comps, made to price the newer: x' + DATA.validation.time.median_multiple.toFixed(2) + ', ' + DATA.validation.time.within_2x_pct + '% within x2. The time split is the test shaped like the job itself, and the cross-validated miss is the band every row carries. Wide — which is why every row shows its working, and why the board ranks rather than promises.' })
       ),
       el('div', { class: 'legend' },
         el('div', null, el('span', { class: 'chip farm', text: 'FARM' }), el('span', { text: 'the modelled slice clears the plan\'s all-in cost by $20 or more' })),
         el('div', null, el('span', { class: 'chip thin', text: 'THIN' }), el('span', { text: 'above water, barely: farm it only if you would use the product anyway' })),
         el('div', null, el('span', { class: 'chip skip', text: 'SKIP' }), el('span', { text: 'the costs beat the slice — usually a small wallet in a giant protocol' })),
         el('p', { class: 'sub', text: 'The netting supposes a launch hands ' + m.user_share_pct + '% of its implied value to users — half split evenly among qualifying wallets, half pro-rata to the farmed quarter of TVL — and charges the plan its gas at the cheapest chain the protocol runs on, plus ' + m.yield_apr_pct + '% a year on the capital while held.' })
+      )
+    );
+  }
+
+  // The fit drawn: every comp a point (log TVL against log market cap), the published curve
+  // through them, and the cross-validated band dashed either side. Drawn from data.js alone.
+  function chartSvg() {
+    var W = 560, H = 320, L = 56, R = 10, T = 10, B = 30;
+    var xs = DATA.comps.map(function (c) { return Math.log10(Math.max(1, c.tvl_usd)); });
+    var ys = DATA.comps.map(function (c) { return Math.log10(Math.max(1, c.mcap_usd)); });
+    var x0 = Math.floor(Math.min.apply(null, xs)), x1 = Math.ceil(Math.max.apply(null, xs));
+    var y0 = Math.floor(Math.min.apply(null, ys)), y1 = Math.ceil(Math.max.apply(null, ys));
+    function px(x) { return L + ((x - x0) / (x1 - x0)) * (W - L - R); }
+    function py(y) { return T + (1 - (y - y0) / (y1 - y0)) * (H - T - B); }
+    function tick(e) { if (e >= 9) return '$' + Math.pow(10, e - 9) + 'B'; if (e >= 6) return '$' + Math.pow(10, e - 6) + 'M'; return '$' + Math.pow(10, e - 3) + 'K'; }
+    var band = Math.log10(DATA.validation.cross.median_multiple);
+    function line(dy) {
+      var pts = [];
+      for (var i = 0; i <= 24; i++) {
+        var x = x0 + ((x1 - x0) * i) / 24;
+        pts.push((i === 0 ? 'M' : 'L') + px(x).toFixed(1) + ' ' + py(DATA.curve.intercept + DATA.curve.slope * x + dy).toFixed(1));
+      }
+      return pts.join(' ');
+    }
+    var out = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="The fitted size curve and the tokenised protocols it was fitted on">';
+    for (var gx = x0; gx <= x1; gx++) {
+      out += '<line x1="' + px(gx) + '" y1="' + T + '" x2="' + px(gx) + '" y2="' + (H - B) + '" stroke="#1a241a"/>';
+      out += '<text x="' + px(gx) + '" y="' + (H - B + 16) + '" text-anchor="middle">' + tick(gx) + '</text>';
+    }
+    for (var gy = y0; gy <= y1; gy += 2) {
+      out += '<text x="' + (L - 6) + '" y="' + (py(gy) + 3) + '" text-anchor="end">' + tick(gy) + '</text>';
+    }
+    out += '<path d="' + line(band) + '" fill="none" stroke="#6d8169" stroke-dasharray="4 4"/>';
+    out += '<path d="' + line(-band) + '" fill="none" stroke="#6d8169" stroke-dasharray="4 4"/>';
+    out += '<path d="' + line(0) + '" fill="none" stroke="#5ce88a" stroke-width="2"/>';
+    DATA.comps.forEach(function (c) {
+      out += '<circle cx="' + px(Math.log10(Math.max(1, c.tvl_usd))).toFixed(1) + '" cy="' + py(Math.log10(Math.max(1, c.mcap_usd))).toFixed(1) + '" r="3" fill="#5ce88a" fill-opacity="0.5"/>';
+    });
+    return out + '</svg>';
+  }
+
+  function fitPanel() {
+    var v = DATA.validation;
+    function testRow(name, t, note) {
+      return el('div', { class: 'test' },
+        el('div', null, el('b', { text: name }), el('span', { class: 'sub', text: note })),
+        el('span', { class: 'num', text: 'x' + t.median_multiple.toFixed(2) + ' · ' + t.within_2x_pct + '% in x2' })
+      );
+    }
+    var chart = el('div', { class: 'chart' });
+    chart.innerHTML = chartSvg();
+    var cats = Object.keys(DATA.curve.category_counts).sort(function (a, b) { return DATA.curve.category_counts[b] - DATA.curve.category_counts[a]; }).slice(0, 9);
+    var fbody = el('tbody');
+    cats.forEach(function (c) {
+      var f = DATA.curve.category_factors[c];
+      fbody.appendChild(el('tr', null,
+        el('td', { text: c }),
+        el('td', { class: 'num', text: String(DATA.curve.category_counts[c]) }),
+        el('td', { class: 'num', text: f ? 'x' + f.toFixed(2) : 'x1.00 (thin)' })
+      ));
+    });
+    return el('section', { class: 'fit' },
+      el('h2', { text: 'The fit, in the open' }),
+      el('div', { class: 'fit-grid' },
+        el('div', null,
+          chart,
+          el('p', { class: 'sub', text: 'Each point is one of the ' + DATA.curve.comps + ' tokenised protocols the curve learns from: its TVL against the market cap the market actually gave it, both on log scales. The dashed lines are the cross-validated band — half of all blind readings land between them. The spread is the honest picture: TVL explains a launch\'s worth only so far, and the board\'s bands say so on every row.' })
+        ),
+        el('div', null,
+          el('div', { class: 'tests' },
+            testRow('Time split', v.time, 'fitted on the older half, priced on the newer — the job\'s own shape'),
+            testRow('Blind split', v.blind, 'two halves by slug, each priced by the other'),
+            testRow('Cross-validation', v.cross, 'five folds, every comp read once blind')
+          ),
+          el('h3', { class: 'fit-h', text: 'Category corrections' }),
+          el('table', { class: 'factors' },
+            el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Comps' }), el('th', { text: 'Factor' }))),
+            fbody
+          ),
+          el('p', { class: 'sub', text: 'A category earns a correction only from six or more trading peers, clamped so a thin category cannot rule the board.' })
+        )
       )
     );
   }
@@ -337,9 +418,22 @@
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { text: fmtPct(row.change_7d) + ' (x' + row.growth_multiplier.toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'No token for' }), el('b', { text: fmtAge(row.age_days) + ' (x' + row.maturity_multiplier.toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'Listed since' }), el('b', { text: row.listed_at || 'unrecorded' })),
-        el('div', { class: 'wide' }, el('span', { text: 'Implied launch value' }), el('b', { text: fmtUsd(row.implied_value_usd) }))
+        el('div', { class: 'wide' }, el('span', { text: 'Implied launch value' }), el('b', { text: fmtUsd(row.implied_value_usd) })),
+        el('div', { class: 'wide' }, el('span', { text: 'Honest band (cross-validated)' }), el('b', { text: fmtUsd(row.band_low_usd) + ' – ' + fmtUsd(row.band_high_usd) })),
+        el('div', null, el('span', { text: 'Local cross-check' }), el('b', { text: fmtUsd(row.local_value_usd) })),
+        el('div', null, el('span', { text: 'Nearest peers say' }), el('b', { text: row.peers.length ? row.peers.map(function (p) { return p.ratio.toFixed(2) + 'x'; }).join(' · ') : '—' }))
       ),
-      el('p', { class: 'sub', text: 'The page re-reads this row off the published curve as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' An implied value is this board\'s own claim about a launch that may never happen, not a price and not a promise.' })
+      el('p', { class: 'sub', text: 'The page re-reads this row off the published curve as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' An implied value is this board\'s own claim about a launch that may never happen, not a price and not a promise. The band is the model\'s own measured error: half of all blind readings in cross-validation land inside it. The local cross-check ignores the curve entirely — the median cap-per-TVL of the eight trading protocols nearest this one in size, times this TVL. Where the two readings sit near each other the number has two witnesses; where they part, trust neither blindly.' })
+    ));
+    panel.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Nearest trading peers' }),
+      el('ul', { class: 'peers' }, row.peers.map(function (peer) {
+        return el('li', null,
+          el('b', { text: peer.name }),
+          el('span', { class: 'sub', text: (peer.category || 'Uncategorised') + ' · TVL ' + fmtUsd(peer.tvl_usd) + ' · real cap ' + fmtUsd(peer.mcap_usd) + ' · ' + peer.ratio.toFixed(2) + 'x TVL' })
+        );
+      })),
+      el('p', { class: 'sub', text: 'Real protocols with real market caps, nearest in size first, its own category ahead of the rest — the exhibits behind every reading on the board.' })
     ));
     panel.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'The farm, netted' }),
@@ -347,6 +441,8 @@
         el('div', null, el('span', { text: 'Position' }), el('b', { text: fmtUsd(row.capital_usd) })),
         el('div', null, el('span', { text: 'Modelled slice if it launches' }), el('b', { text: fmtMoney(row.slice_usd) })),
         el('div', null, el('span', { text: 'All-in cost' }), el('b', { text: fmtMoney(row.cost_usd) })),
+        el('div', null, el('span', { text: 'Break-even launch value' }), el('b', { text: fmtUsd(row.breakeven_value_usd) })),
+        el('div', null, el('span', { text: 'Net if users get 5%, not 10%' }), el('b', { text: fmtMoney(row.cautious_net_usd) })),
         el('div', null, el('span', { text: 'Net' }), el('b', { text: fmtMoney(row.net_usd) }))
       ),
       el('div', { class: 'verdict-line' },
@@ -374,6 +470,7 @@
     shell.appendChild(header());
     shell.appendChild(lede());
     shell.appendChild(methodPanel());
+    shell.appendChild(fitPanel());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     shell.appendChild(el('p', { class: 'foot', text: 'Data: the sealed DefiLlama snapshot of ' + DATA.as_of + ', read once and never updated. "Records no token" is DefiLlama\'s record, not proof a token does not exist. Implied values are this entry\'s own model, stated in full above; a launch may never happen, and a farm plan is a costed suggestion, not advice.' }));

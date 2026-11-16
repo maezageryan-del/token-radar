@@ -89,6 +89,35 @@ body {
 .legend div { display: flex; gap: 9px; align-items: baseline; font-size: 13px; color: var(--dim); }
 .legend b { flex: none; }
 
+/* Fit panel: the chart of the fit, the three blind tests, the category corrections */
+.fit {
+  margin: 0 0 18px; background: var(--panel); border: 1px solid var(--line-soft);
+  border-radius: 12px; padding: 14px 16px;
+}
+.fit h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0.02em; }
+.fit-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; }
+.chart { background: #0a120c; border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart text { fill: var(--faint); font-family: var(--mono); font-size: 10px; }
+.tests { display: flex; flex-direction: column; gap: 8px; }
+.test {
+  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+  background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 9px; padding: 8px 10px;
+}
+.test b { display: block; font-size: 13.5px; }
+.test .sub { display: block; }
+.test .num { color: var(--sweep); font-size: 13px; }
+.fit-h { margin: 14px 0 7px; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); }
+table.factors { min-width: 0; font-size: 13px; }
+table.factors th, table.factors td { padding: 4px 8px 4px 0; }
+table.factors thead th { border-bottom: 1px solid var(--line-soft); }
+
+/* Nearest peers in the detail panel */
+.peers { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.peers li { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 9px; padding: 8px 10px; }
+.peers b { display: block; font-size: 14px; }
+.peers .sub { display: block; }
+
 /* Controls */
 .controls {
   display: flex; gap: 14px; flex-wrap: wrap; align-items: end;
@@ -189,7 +218,7 @@ td.num, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; whi
 .verdict-line p { margin: 0; color: var(--dim); font-size: 13.5px; }
 .foot { margin-top: 22px; color: var(--faint); font-size: 12.5px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
 @media (max-width: 860px) {
-  .lede, .method { grid-template-columns: 1fr; }
+  .lede, .method, .fit-grid { grid-template-columns: 1fr; }
   .lede h1 { font-size: 23px; }
   .count { margin-left: 0; }
 }

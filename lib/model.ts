@@ -4,10 +4,13 @@
 // a launch is worth: they are what the market actually paid for TVL like this. So the model first
 // fits a size curve to them — log10(market cap) against log10(TVL), least squares, with a per-
 // category correction — then reads every pre-token protocol's implied value off that curve, adjusted
-// for its seven-day TVL growth and for how long it has run with no token. The fit is tested blind:
-// the comps are split in two by slug, each half is priced by a curve fitted on the other half alone,
-// and the dashboard states the median miss. No protocol name is ever special-cased; one function
-// scores every row, and the page recomputes each row from the same figures so code and board agree.
+// for its seven-day TVL growth and for how long it has run with no token. The fit is tested three
+// ways, all blind: a two-fold split by slug, a five-fold cross-validation, and a time split that
+// fits on the older half of the comps and prices the newer — the test shaped like the job itself.
+// The cross-validated median miss becomes every row's stated band, and a second, local reading
+// (the nearest comps' own cap-per-TVL) is set beside the curve's as a cross-check, with the
+// nearest trading peers named. No protocol name is ever special-cased; one function scores every
+// row, and the page recomputes each row from the same figures so code and board agree.
 //
 // The board ranks every rankable pre-token protocol (198 on this snapshot), not a capped sample:
 // the whole watchlist first by value, then the early protocols below the floor — the radar exists
@@ -147,6 +150,8 @@ export function isRankable(p: SnapshotProtocol): boolean {
 export interface ModelConstants {
   /** Per cent of a launch's implied value the model supposes goes to the protocol's users. */
   user_share_pct: number;
+  /** The cautious scenario's user share: half the base case, for the detail view's second netting. */
+  cautious_share_pct: number;
   /** The share of a protocol's TVL the model supposes is airdrop-motivated capital. */
   farmed_share: number;
   /** Of the user allocation, the share split evenly among qualifying wallets (the breadth half). */
@@ -172,6 +177,7 @@ export interface ModelConstants {
 
 export const MODEL: ModelConstants = {
   user_share_pct: 10,
+  cautious_share_pct: 5,
   farmed_share: 0.25,
   breadth_share: 0.5,
   typical_position_usd: 250,
@@ -188,7 +194,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the board's rows carry it. */
-export const MODEL_VERSION = 'launch-radar-2';
+export const MODEL_VERSION = 'launch-radar-3';
 
 /**
  * Categories whose TVL is other people's assets in transit — staked or restaked for the
@@ -218,6 +224,8 @@ export interface SizeCurve {
   slope: number;
   /** Category -> multiplier on the curve's value, from the median miss of that category's comps. */
   category_factors: Record<string, number>;
+  /** Category -> how many of the comps sit in it, so a reader can weigh each factor. */
+  category_counts: Record<string, number>;
   comps: number;
   /** The median market-cap-to-TVL ratio across the comps, for the reader's orientation. */
   median_ratio: number;
@@ -276,10 +284,13 @@ export function fitCurve(comps: SnapshotProtocol[], model: ModelConstants = MODE
     factors[key] = round4(clamp(median, 1 / model.category_clamp, model.category_clamp));
   }
   const ratios = comps.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
+  const counts: Record<string, number> = {};
+  for (const [key, list] of [...byCategory.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) counts[key] = list.length;
   return {
     intercept: round4(line.intercept),
     slope: round4(line.slope),
     category_factors: factors,
+    category_counts: counts,
     comps: comps.length,
     median_ratio: round4(ratios[Math.floor(ratios.length / 2)]!),
   };
@@ -328,6 +339,120 @@ export function blindTest(comps: SnapshotProtocol[], model: ModelConstants = MOD
     median_multiple: misses.length > 0 ? Math.round(misses[Math.floor(misses.length / 2)]! * 100) / 100 : 0,
     within_2x_pct: misses.length > 0 ? Math.round((within / misses.length) * 1000) / 10 : 0,
   };
+}
+
+/** Gather a set of miss multiples into a test result of the blind test's shape. */
+function summariseMisses(misses: number[]): BlindTest {
+  const sorted = [...misses].sort((a, b) => a - b);
+  const within = misses.filter((m) => m <= 2).length;
+  return {
+    tested: misses.length,
+    median_multiple: misses.length > 0 ? Math.round(sorted[Math.floor(sorted.length / 2)]! * 100) / 100 : 0,
+    within_2x_pct: misses.length > 0 ? Math.round((within / misses.length) * 1000) / 10 : 0,
+  };
+}
+
+/** A comp's miss multiple under a fitted curve: how far its reading lands from its real market cap. */
+function missOf(curve: SizeCurve, p: SnapshotProtocol): number {
+  const predicted = curveValue(curve, p.tvl_usd) * (curve.category_factors[p.category ?? 'Uncategorised'] ?? 1);
+  return Math.max(predicted, p.mcap_usd!) / Math.min(predicted, p.mcap_usd!);
+}
+
+/** FNV-1a over a slug: a stable fold assignment nothing about a protocol's value can influence. */
+function slugHash(slug: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < slug.length; i++) {
+    h ^= slug.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Five-fold cross-validation. The comps are dealt into five folds by slug hash, each fold is
+ * priced by a curve fitted on the other four, and every comp is read exactly once, blind. A
+ * two-fold split can be lucky; this cannot, so it is the test the board's value bands are read
+ * off: half of all readings land within this multiple of the truth, by the model's own measure.
+ */
+export function crossValidate(comps: SnapshotProtocol[], model: ModelConstants = MODEL, folds = 5): BlindTest {
+  const misses: number[] = [];
+  for (let fold = 0; fold < folds; fold++) {
+    const fitOn = comps.filter((p) => slugHash(p.slug) % folds !== fold);
+    const testOn = comps.filter((p) => slugHash(p.slug) % folds === fold);
+    if (fitOn.length < 10 || testOn.length === 0) continue;
+    const curve = fitCurve(fitOn, model);
+    for (const p of testOn) misses.push(missOf(curve, p));
+  }
+  return summariseMisses(misses);
+}
+
+/**
+ * The time-split test: the one shaped like the job itself. The dated comps are ordered by the
+ * day DefiLlama began tracking them, the curve is fitted on the older half alone, and it is made
+ * to price the newer half — fitted on the past, read on the future, as the board reads protocols
+ * whose launches are still to come. Comps with no recorded listing day sit this test out.
+ */
+export function timeSplitTest(comps: SnapshotProtocol[], asOf: string, model: ModelConstants = MODEL): BlindTest {
+  const dated = comps
+    .filter((p) => ageDays(asOf, p.listed_at) !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : 1));
+  const half = Math.floor(dated.length / 2);
+  const fitOn = dated.slice(0, half);
+  const testOn = dated.slice(half);
+  if (fitOn.length < 10 || testOn.length === 0) return { tested: 0, median_multiple: 0, within_2x_pct: 0 };
+  const curve = fitCurve(fitOn, model);
+  return summariseMisses(testOn.map((p) => missOf(curve, p)));
+}
+
+/** A trading peer the detail view sets beside a reading: the market's own figures, not a model's. */
+export interface PeerComp {
+  slug: string;
+  name: string;
+  category: string | null;
+  tvl_usd: number;
+  mcap_usd: number;
+  /** The peer's real market cap per dollar of its TVL. */
+  ratio: number;
+}
+
+/** Comps ordered by closeness of TVL to a protocol, slug breaking ties: a deterministic neighbourhood. */
+function nearestByTvl(p: SnapshotProtocol, comps: SnapshotProtocol[]): SnapshotProtocol[] {
+  const x = Math.log10(Math.max(1, p.tvl_usd));
+  return [...comps].sort((a, b) =>
+    Math.abs(Math.log10(Math.max(1, a.tvl_usd)) - x) - Math.abs(Math.log10(Math.max(1, b.tvl_usd)) - x) ||
+    (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+}
+
+/**
+ * The nearest trading peers of a protocol: its own category's closest by TVL first, then the
+ * closest across the whole comp set. These are the exhibits a reader checks a reading against —
+ * real protocols with real market caps, and no model standing between them and the eye.
+ */
+export function nearestComps(p: SnapshotProtocol, comps: SnapshotProtocol[], count = 3): PeerComp[] {
+  const key = p.category ?? 'Uncategorised';
+  const same = nearestByTvl(p, comps.filter((c) => (c.category ?? 'Uncategorised') === key));
+  const rest = nearestByTvl(p, comps.filter((c) => (c.category ?? 'Uncategorised') !== key));
+  return [...same, ...rest].slice(0, count).map((c) => ({
+    slug: c.slug,
+    name: c.name,
+    category: c.category,
+    tvl_usd: c.tvl_usd,
+    mcap_usd: c.mcap_usd!,
+    ratio: round4(c.mcap_usd! / c.tvl_usd),
+  }));
+}
+
+/**
+ * A local cross-check on the curve's reading: the median cap-per-TVL of the eight comps nearest
+ * in size, times this protocol's TVL. It knows nothing of the fitted curve; where the two
+ * readings sit near each other the board's number has two witnesses, and where they part the
+ * detail view shows both and lets the reader judge which to trust.
+ */
+export function localValue(p: SnapshotProtocol, comps: SnapshotProtocol[], neighbours = 8): number {
+  const near = nearestByTvl(p, comps).slice(0, neighbours);
+  if (near.length === 0) return 0;
+  const ratios = near.map((c) => c.mcap_usd! / c.tvl_usd).sort((a, b) => a - b);
+  return Math.max(1, Math.round(ratios[Math.floor(ratios.length / 2)]! * p.tvl_usd));
 }
 
 /** One protocol's reading: the curve value and every adjustment that turns it into an implied value. */
@@ -418,6 +543,10 @@ export interface FarmEconomics {
   /** The farmer's slice if the protocol issues at its implied value, under the model's shares. */
   slice_usd: number;
   net_usd: number;
+  /** The launch value at which the slice would exactly cover the cost: below it the plan is under water. */
+  breakeven_value_usd: number;
+  /** The net if a launch hands users only the cautious share (half the base case) instead. */
+  cautious_net_usd: number;
   verdict: 'farm' | 'thin' | 'skip';
 }
 
@@ -443,10 +572,13 @@ export function farmEconomics(p: SnapshotProtocol, implied: number, age: number 
   const farmedPool = Math.max(p.tvl_usd * model.farmed_share, capital);
   const wallets = Math.max(50, Math.round(farmedPool / model.typical_position_usd));
   const userPool = implied * (model.user_share_pct / 100);
-  const slice = Math.round(userPool * (model.breadth_share / wallets + (1 - model.breadth_share) * (capital / farmedPool)) * 100) / 100;
+  const shareFactor = model.breadth_share / wallets + (1 - model.breadth_share) * (capital / farmedPool);
+  const slice = Math.round(userPool * shareFactor * 100) / 100;
   const net = Math.round((slice - cost) * 100) / 100;
+  const breakeven = Math.round(cost / ((model.user_share_pct / 100) * shareFactor));
+  const cautiousNet = Math.round((slice * (model.cautious_share_pct / model.user_share_pct) - cost) * 100) / 100;
   const verdict = net >= 20 ? 'farm' : net > 0 ? 'thin' : 'skip';
-  return { capital_usd: capital, hold_days: hold, weeks, gas_usd: gas, yield_forgone_usd: yieldForgone, cost_usd: cost, slice_usd: slice, net_usd: net, verdict };
+  return { capital_usd: capital, hold_days: hold, weeks, gas_usd: gas, yield_forgone_usd: yieldForgone, cost_usd: cost, slice_usd: slice, net_usd: net, breakeven_value_usd: breakeven, cautious_net_usd: cautiousNet, verdict };
 }
 
 const money = (n: number): string => (n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`);
@@ -496,10 +628,10 @@ function stepText(s: string): string {
 }
 
 /**
- * A protocol's farm plan: seven steps, each an action with its cost and its time, and the last
- * one the netting itself — the modelled slice against the all-in cost, and the verdict that
- * subtraction gives. Derived from the protocol's own record (category, chains, TVL, age) and its
- * reading; never from a hand-written list of names.
+ * A protocol's farm plan: eight steps, each an action with its cost and its time, the seventh a
+ * watch brief with its exit triggers, and the last one the netting itself — the modelled slice
+ * against the all-in cost, and the verdict that subtraction gives. Derived from the protocol's
+ * own record (category, chains, TVL, age) and its reading; never from a hand-written list of names.
  */
 export function farmSteps(p: SnapshotProtocol, reading: Reading, econ: FarmEconomics, model: ModelConstants = MODEL): string[] {
   const chain = chainOf(p);
@@ -512,6 +644,7 @@ export function farmSteps(p: SnapshotProtocol, reading: Reading, econ: FarmEcono
     `Make one qualifying action a week — a deposit, a swap, a vote or a claim — for ${econ.weeks} weeks, always from the same wallet. Cost: about ${money(gas)} of gas a week. Time: 10 minutes a week.`,
     `Hold the position for at least ${econ.hold_days} days so the activity spans more than one snapshot of the protocol's books. Cost: the $${econ.capital_usd} stays in, forgoing about ${money(econ.yield_forgone_usd)} of stablecoin yield at ${model.yield_apr_pct}% a year. Time: ${econ.hold_days} days.`,
     `Open the protocol's own points or rewards page and claim only from the link it publishes; a launch never charges a claim fee. Cost: nothing to check, and never pay to claim. Time: 10 minutes.`,
+    `Watch the position while it runs: if ${p.name} announces a points snapshot, a checker page or a token, act the same day; if its TVL falls by a third inside a week, stop adding and re-read its row here before anything else. Cost: nothing but attention. Time: 5 minutes a week.`,
     `The maths, out loud: if ${p.name} issues at the board's implied value and hands ${model.user_share_pct}% of it to users — half split evenly among qualifying wallets, half pro-rata to farmed capital — a $${econ.capital_usd} position's slice is about ${money(econ.slice_usd)} against ${money(econ.cost_usd)} of all-in cost, net ${money(econ.net_usd)}. Verdict: ${verdictWord}.`,
   ].map(stepText);
 }
@@ -533,6 +666,13 @@ export interface BoardRow {
   on_watchlist: boolean;
   age_days: number | null;
   implied_value_usd: number;
+  /** The reading's honest band: the implied value divided and multiplied by the cross-validated median miss. */
+  band_low_usd: number;
+  band_high_usd: number;
+  /** The local cross-check: the nearest comps' median cap-per-TVL, times this protocol's TVL. */
+  local_value_usd: number;
+  /** The nearest trading peers, the exhibits the detail view sets beside the reading. */
+  peers: PeerComp[];
   model: {
     curve_value_usd: number;
     category_factor: number;
@@ -567,6 +707,12 @@ export interface RadarRow {
   cost_usd: number;
   slice_usd: number;
   net_usd: number;
+  band_low_usd: number;
+  band_high_usd: number;
+  local_value_usd: number;
+  breakeven_value_usd: number;
+  cautious_net_usd: number;
+  peers: PeerComp[];
   steps: string[];
 }
 
@@ -585,7 +731,7 @@ export interface LiveRow {
 /** How many live-token protocols the dashboard's Live view carries, by market cap. */
 export const LIVE_ROWS = 32;
 
-/** Everything the dashboard needs: the board, the live set, the curve it was read off, its blind test. */
+/** Everything the dashboard needs: the board, the live set, the curve it was read off, its tests. */
 export interface RadarData {
   as_of: string;
   source: string;
@@ -593,7 +739,10 @@ export interface RadarData {
   model: ModelConstants;
   model_version: string;
   curve: SizeCurve;
-  blind: BlindTest;
+  /** The validation suite: the same curve machinery, tested blind three ways. */
+  validation: { blind: BlindTest; cross: BlindTest; time: BlindTest };
+  /** The comps themselves, compact, for the model panel's chart of the fit. */
+  comps: { slug: string; name: string; category: string | null; tvl_usd: number; mcap_usd: number }[];
   watchlist_size: number;
   board_size: number;
   early_size: number;
@@ -608,7 +757,7 @@ export interface RadarData {
  * the fitted curve and ranked by implied value. Ranks are 1..N and values never rise as rank
  * ascends; equal values are ordered by TVL, then slug, so two runs write the same bytes.
  */
-export function buildBoard(snapshot: Snapshot, curve: SizeCurve, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, curve: SizeCurve, comps: SnapshotProtocol[], bandMultiple: number, model: ModelConstants = MODEL): BoardRow[] {
   const watch = new Set(snapshot.watchlist);
   const chosen = snapshot.protocols.filter((p) => watch.has(p.slug) || isRankable(p));
   const scored = chosen.map((p) => {
@@ -636,6 +785,10 @@ export function buildBoard(snapshot: Snapshot, curve: SizeCurve, model: ModelCon
     on_watchlist: watch.has(s.p.slug),
     age_days: s.reading.age,
     implied_value_usd: s.reading.implied,
+    band_low_usd: Math.max(1, Math.round(s.reading.implied / bandMultiple)),
+    band_high_usd: Math.round(s.reading.implied * bandMultiple),
+    local_value_usd: localValue(s.p, comps),
+    peers: nearestComps(s.p, comps),
     model: {
       curve_value_usd: s.reading.curve_value,
       category_factor: s.reading.category_factor,
@@ -690,16 +843,25 @@ export function radarRow(row: BoardRow): RadarRow {
     cost_usd: row.farm.cost_usd,
     slice_usd: row.farm.slice_usd,
     net_usd: row.farm.net_usd,
+    band_low_usd: row.band_low_usd,
+    band_high_usd: row.band_high_usd,
+    local_value_usd: row.local_value_usd,
+    breakeven_value_usd: row.farm.breakeven_value_usd,
+    cautious_net_usd: row.farm.cautious_net_usd,
+    peers: row.peers,
     steps: row.farm_steps,
   };
 }
 
-/** Everything the dashboard renders, from the snapshot: fit the curve, test it blind, build the board. */
+/** Everything the dashboard renders, from the snapshot: fit the curve, test it three ways, build the board. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const comps = snapshot.protocols.filter(isComp);
   const curve = fitCurve(comps, model);
   const blind = blindTest(comps, model);
-  const board = buildBoard(snapshot, curve, model);
+  const cross = crossValidate(comps, model);
+  const time = timeSplitTest(comps, snapshot.as_of, model);
+  const bandMultiple = cross.median_multiple > 0 ? cross.median_multiple : blind.median_multiple;
+  const board = buildBoard(snapshot, curve, comps, bandMultiple, model);
   const live = liveRows(snapshot);
   const watch = new Set(snapshot.watchlist);
   const counts = { farm: 0, thin: 0, skip: 0 };
@@ -711,7 +873,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model,
     model_version: MODEL_VERSION,
     curve,
-    blind,
+    validation: { blind, cross, time },
+    comps: comps.map((p) => ({ slug: p.slug, name: p.name, category: p.category, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: board.filter((r) => !watch.has(r.slug)).length,
