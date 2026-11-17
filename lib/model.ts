@@ -196,7 +196,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the board's rows carry it. */
-export const MODEL_VERSION = 'launch-radar-4';
+export const MODEL_VERSION = 'launch-radar-5';
 
 /**
  * Categories whose TVL is other people's assets in transit — staked or restaked for the

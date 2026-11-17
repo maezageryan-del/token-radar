@@ -112,6 +112,7 @@
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (key === 'net') { av = a.net_usd; bv = b.net_usd; }
+      else if (key === 'stability') { av = a.stability_pct; bv = b.stability_pct; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -229,7 +230,7 @@
         el('td', { class: 'num', text: f ? 'x' + f.toFixed(2) : 'x1.00 (thin)' })
       ));
     });
-    return el('section', { class: 'fit' },
+    return el('section', { class: 'fit', id: 'fit' },
       el('h2', { text: 'The fit, in the open' }),
       el('div', { class: 'fit-grid' },
         el('div', null,
@@ -278,14 +279,35 @@
     wlBox.addEventListener('change', function () { state.wl = wlBox.checked; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; writeHash(); render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; writeHash(); render(); } });
-    var shown = state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols';
-    return el('div', { class: 'controls' },
-      el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
-      el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
-      el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Farm verdict' }), verdict),
-      el('div', { class: 'field check' }, wlBox, el('label', { for: 'wl', text: 'Watchlist only' })),
-      el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
-      el('span', { class: 'count', text: shown })
+    function verdictChip(value, label, count) {
+      var active = state.verdict === value;
+      return el('button', { type: 'button', class: 'chip-btn' + (active ? ' active' : ''), 'aria-pressed': active ? 'true' : 'false', onclick: function () { state.verdict = value; writeHash(); render(); } },
+        label, el('span', { class: 'chip-n', text: String(count) }));
+    }
+    var chips = el('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by verdict' },
+      verdictChip('all', 'All verdicts', DATA.rows.length),
+      verdictChip('farm', 'Farm', DATA.verdict_counts.farm),
+      verdictChip('thin', 'Thin', DATA.verdict_counts.thin),
+      verdictChip('skip', 'Skip', DATA.verdict_counts.skip)
+    );
+    var notes = [];
+    if (state.verdict !== 'all') notes.push('verdict: ' + state.verdict);
+    if (state.category !== 'all') notes.push('category: ' + state.category);
+    if (state.wl) notes.push('watchlist only');
+    if (state.q.trim()) notes.push('search: "' + state.q.trim() + '"');
+    var shown = state.tab === 'pre-token'
+      ? rows().length + ' of ' + DATA.rows.length + ' rows shown' + (notes.length ? ' — ' + notes.join(' · ') : '')
+      : DATA.live.length + ' live-token protocols';
+    return el('div', null,
+      el('div', { class: 'controls' },
+        el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
+        el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
+        el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Farm verdict' }), verdict),
+        el('div', { class: 'field check' }, wlBox, el('label', { for: 'wl', text: 'Watchlist only' })),
+        el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
+        el('span', { class: 'count', text: shown })
+      ),
+      chips
     );
   }
 
@@ -331,6 +353,7 @@
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
         el('td', { class: 'num ' + (r.net_usd >= 0 ? 'net-pos' : 'net-neg'), text: fmtMoney(r.net_usd) }),
+        el('td', { class: 'num' }, el('span', { class: 'stab ' + (r.stability_pct >= 90 ? 'hi' : r.stability_pct >= 70 ? 'mid' : 'lo'), title: 'This verdict in ' + r.stability_pct + '% of the ' + DATA.validation.bootstrap.draws + ' bootstrap refits', text: r.stability_pct + '%' })),
         el('td', null, el('span', { class: 'chip ' + r.verdict, text: r.verdict.toUpperCase() }))
       );
       tbody.appendChild(tr);
@@ -338,7 +361,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { text: 'Pre-token protocols, strongest implied launch value first. Net is the farm plan\'s modelled slice minus its all-in cost. Select a row for its reading and its plan.' }),
+          el('caption', { text: 'Pre-token protocols, strongest implied launch value first. Net is the farm plan\'s modelled slice minus its all-in cost, and "Verdict holds" is the share of the model\'s 200 bootstrap refits in which the row\'s verdict comes out the same. Select a row for its reading and its plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -347,6 +370,7 @@
             sortHeader('age', 'No token for'),
             sortHeader('implied', 'Implied value'),
             sortHeader('net', 'Farm net'),
+            sortHeader('stability', 'Verdict holds'),
             el('th', { scope: 'col', text: 'Verdict' })
           )),
           tbody
@@ -476,10 +500,10 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
-    shell.appendChild(methodPanel());
-    shell.appendChild(fitPanel());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
+    shell.appendChild(methodPanel());
+    shell.appendChild(fitPanel());
     shell.appendChild(el('p', { class: 'foot', text: 'Data: the sealed DefiLlama snapshot of ' + DATA.as_of + ', read once and never updated. "Records no token" is DefiLlama\'s record, not proof a token does not exist. Implied values are this entry\'s own model, stated in full above; a launch may never happen, and a farm plan is a costed suggestion, not advice.' }));
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');

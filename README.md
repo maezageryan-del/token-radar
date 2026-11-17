@@ -18,12 +18,14 @@ the market actually paid for TVL like this. So `lib/model.ts`:
    wrapped assets and pass-through staking books left out): log10(market cap) against log10(TVL),
    least squares, with a per-category correction from each category's median miss, clamped so a
    thin category cannot rule.
-2. **Tests the fit blind, three ways** — a two-fold split by slug (each half priced by a curve
+2. **Tests the fit blind, four ways** — a two-fold split by slug (each half priced by a curve
    fitted on the other alone: median miss ×3.46, 33.3% within ×2); five-fold cross-validation,
-   every comp read exactly once blind (×3.78, 27.8%); and a time split — fitted on the older
-   half of the comps, made to price the newer (×2.17, 44.1%). The time split is the test shaped
+   every comp read exactly once blind (×3.78, 27.8%); a time split — fitted on the older
+   half of the comps, made to price the newer (×2.17, 44.1%); and a bootstrap — the curve
+   refitted on 200 resamples of the comps, every row's verdict re-decided on each refit
+   (median verdict stability 86.5%). The time split is the test shaped
    like the job itself: fit on the past, read on launches still to come. The dashboard states
-   all three next to the model, because a curve that hides its error is asking to be trusted
+   all four next to the model, because a curve that hides its error is asking to be trusted
    for the wrong reason.
 3. **Reads each pre-token protocol off the curve** — the curve's value for its TVL and category,
    moved by its seven-day TVL growth (clamped) and by a maturity factor for how long it has run
@@ -32,7 +34,10 @@ the market actually paid for TVL like this. So `lib/model.ts`:
    cross-validated median miss — half of all blind readings land inside it) and a local
    cross-check that ignores the curve entirely, the median cap-per-TVL of the eight trading
    protocols nearest in size, times this TVL. The detail view also names the three nearest
-   trading peers, with their real market caps, as exhibits.
+   trading peers, with their real market caps, as exhibits. And every row carries its verdict
+   stability — the share of the 200 bootstrap refits in which its verdict comes out the same —
+   so a verdict that flips when the comp set is reshuffled is flagged on the board itself,
+   not hidden.
 4. **Ranks all of them** — 198 rows on this snapshot: the whole 40-protocol watchlist plus every
    early protocol below the floor that passes the watchlist's own standard (not an exchange
    book, not a versioned pool, not a wrapped, staked or bridged product of a token that trades).
@@ -55,14 +60,17 @@ and the net under a cautious scenario where users get 5%, not 10%. On this snaps
 ## The dashboard
 
 `dashboard/` is a static page (no framework, no network) that `main.ts` fills from `data.js`:
-the ranked board with sortable columns; filters for search, category, farm verdict and
+the ranked board first — sortable columns, one-click verdict chips with their counts, a count
+line that names the filters in force, and a "Verdict holds" column carrying each row's
+bootstrap verdict stability; filters for search, category, farm verdict and
 watchlist-only; a detail panel per protocol showing the curve reading with its band and local
 cross-check, the nearest trading peers, the netted farm maths with its break-even and cautious
 scenario, and the plan; a "fit, in the open" panel that draws the curve through the 90 comps it
-was fitted on, states the three blind tests, and tables the category corrections; and the
+was fitted on, states the four blind tests, and tables the category corrections; and the
 live-token protocols set aside at the market's own values. The page re-reads every row's implied
 value off the published curve, so the number on screen and the number in `board.json` are the
-same arithmetic.
+same arithmetic. Four screenshots are handed in: the board, a detail view, the farm-filtered
+board, and the fit panel.
 
 ## Run it
 
