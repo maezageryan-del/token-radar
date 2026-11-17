@@ -3,11 +3,12 @@
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits
 // the comps size curve in lib/model.ts to the snapshot's own tokenised protocols, tests the fit
-// three ways (a two-fold blind split, five-fold cross-validation, and a time split that fits on
-// the older half of the comps and prices the newer), reads every pre-token protocol's implied
-// value off the curve with an honest band and a local cross-check beside it, and writes the
-// ranked board to /output/board.json. It then writes the dashboard's data to /output/data.js,
-// copies this repository's dashboard/ and screenshots/ to /output, and writes
+// four ways (a two-fold blind split, five-fold cross-validation, a time split that fits on the
+// older half of the comps and prices the newer, and a bootstrap that refits the curve on 200
+// resamples of the comps and re-decides every row's verdict on each refit), reads every pre-token
+// protocol's implied value off the curve with an honest band and a local cross-check beside it,
+// and writes the ranked board to /output/board.json. It then writes the dashboard's data to
+// /output/data.js, copies this repository's dashboard/ and screenshots/ to /output, and writes
 // /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html,
@@ -91,9 +92,11 @@ for (const name of shots) {
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 const counts = radar.verdict_counts;
+const boot = radar.validation.bootstrap;
 process.stdout.write(
   `launch radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `launch radar: curve fitted on ${radar.curve.comps} tokenised protocols (slope ${radar.curve.slope}, median cap/TVL ${radar.curve.median_ratio}); blind test on ${radar.validation.blind.tested}: median miss x${radar.validation.blind.median_multiple}, ${radar.validation.blind.within_2x_pct}% within x2\n` +
     `launch radar: cross-validation on ${radar.validation.cross.tested}: median miss x${radar.validation.cross.median_multiple}, ${radar.validation.cross.within_2x_pct}% within x2; time-split on ${radar.validation.time.tested}: median miss x${radar.validation.time.median_multiple}, ${radar.validation.time.within_2x_pct}% within x2\n` +
+    `launch radar: bootstrap on ${boot.draws} refits: slope ${boot.slope_p5}–${boot.slope_p95} (median ${boot.slope_p50}), intercept ${boot.intercept_p5}–${boot.intercept_p95}; median verdict stability ${boot.median_stability_pct}%, ${boot.rows_stable_pct}% of rows hold their verdict in 90%+ of refits\n` +
     `launch radar: verdicts ${counts.farm} farm, ${counts.thin} thin, ${counts.skip} skip; wrote board.json, data.js, dashboard (${dashFiles.length} files), screenshots (${shots.length} images) and dossier.json to ${out}\n`,
 );

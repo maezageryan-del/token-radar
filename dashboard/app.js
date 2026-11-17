@@ -147,7 +147,8 @@
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', null, DATA.watchlist_size + ' / ' + DATA.watchlist_size)),
         el('div', { class: 'fact' }, el('span', { text: 'Rows ranked' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Verdicts: farm' }), el('b', null, el('i', { text: String(c.farm) }), ' farm · ' + c.thin + ' thin')),
-        el('div', { class: 'fact' }, el('span', { text: 'Time-split test, median miss' }), el('b', { text: 'x' + DATA.validation.time.median_multiple.toFixed(2) }))
+        el('div', { class: 'fact' }, el('span', { text: 'Time-split test, median miss' }), el('b', { text: 'x' + DATA.validation.time.median_multiple.toFixed(2) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Verdicts that hold under resampling' }), el('b', { text: DATA.validation.bootstrap.rows_stable_pct + '% of rows' }))
       )
     );
   }
@@ -160,7 +161,7 @@
         el('h2', { text: 'How the number is made' }),
         el('p', { text: 'The snapshot\'s own ' + curve.comps + ' tokenised protocols are the only guide: they are what the market actually paid for TVL like this (median ' + curve.median_ratio.toFixed(2) + 'x TVL). A size curve is fitted to them — log10(market cap) on log10(TVL), slope ' + curve.slope.toFixed(2) + ' — with a per-category correction, and each pre-token protocol is read off it, moved by its seven-day growth and by how long it has run with no token. Pass-through staking books are left out of the fit: their TVL is other people\'s assets, and their tokens price a fee sliver, not the pile.' }),
         el('div', { class: 'formula', text: 'implied = 10^(' + curve.intercept.toFixed(2) + ' + ' + curve.slope.toFixed(2) + ' x log10 TVL) x category x (1 + clamp(7d, ' + m.growth_floor + ', ' + m.growth_cap + ') x ' + m.growth_weight + ') x maturity(age)' }),
-        el('p', { text: 'Tested blind three ways before it is trusted. Split in two by slug, each half priced by a curve fitted on the other alone: median miss x' + DATA.validation.blind.median_multiple.toFixed(2) + ', ' + DATA.validation.blind.within_2x_pct + '% within x2. Five-fold cross-validation, every comp read exactly once blind: x' + DATA.validation.cross.median_multiple.toFixed(2) + ', ' + DATA.validation.cross.within_2x_pct + '% within x2. And a time split — fitted on the older half of the comps, made to price the newer: x' + DATA.validation.time.median_multiple.toFixed(2) + ', ' + DATA.validation.time.within_2x_pct + '% within x2. The time split is the test shaped like the job itself, and the cross-validated miss is the band every row carries. Wide — which is why every row shows its working, and why the board ranks rather than promises.' })
+        el('p', { text: 'Tested blind four ways before it is trusted. Split in two by slug, each half priced by a curve fitted on the other alone: median miss x' + DATA.validation.blind.median_multiple.toFixed(2) + ', ' + DATA.validation.blind.within_2x_pct + '% within x2. Five-fold cross-validation, every comp read exactly once blind: x' + DATA.validation.cross.median_multiple.toFixed(2) + ', ' + DATA.validation.cross.within_2x_pct + '% within x2. And a time split — fitted on the older half of the comps, made to price the newer: x' + DATA.validation.time.median_multiple.toFixed(2) + ', ' + DATA.validation.time.within_2x_pct + '% within x2. The time split is the test shaped like the job itself, and the cross-validated miss is the band every row carries. The fourth test is a bootstrap: the curve is refitted on ' + DATA.validation.bootstrap.draws + ' resamples of the comps, and every row\'s verdict is re-decided on each refit — the board states how often each verdict survives, because a verdict that flips when the comp set is reshuffled is not one to act on. Wide bands — which is why every row shows its working, and why the board ranks rather than promises.' })
       ),
       el('div', { class: 'legend' },
         el('div', null, el('span', { class: 'chip farm', text: 'FARM' }), el('span', { text: 'the modelled slice clears the plan\'s all-in cost by $20 or more' })),
@@ -239,7 +240,11 @@
           el('div', { class: 'tests' },
             testRow('Time split', v.time, 'fitted on the older half, priced on the newer — the job\'s own shape'),
             testRow('Blind split', v.blind, 'two halves by slug, each priced by the other'),
-            testRow('Cross-validation', v.cross, 'five folds, every comp read once blind')
+            testRow('Cross-validation', v.cross, 'five folds, every comp read once blind'),
+            el('div', { class: 'test' },
+              el('div', null, el('b', { text: 'Bootstrap stability' }), el('span', { class: 'sub', text: 'curve refitted on ' + v.bootstrap.draws + ' resamples of the comps; every verdict re-decided on each' })),
+              el('span', { class: 'num', text: 'slope ' + v.bootstrap.slope_p5.toFixed(2) + '–' + v.bootstrap.slope_p95.toFixed(2) + ' · ' + v.bootstrap.median_stability_pct + '% hold' })
+            )
           ),
           el('h3', { class: 'fit-h', text: 'Category corrections' }),
           el('table', { class: 'factors' },
@@ -420,10 +425,12 @@
         el('div', null, el('span', { text: 'Listed since' }), el('b', { text: row.listed_at || 'unrecorded' })),
         el('div', { class: 'wide' }, el('span', { text: 'Implied launch value' }), el('b', { text: fmtUsd(row.implied_value_usd) })),
         el('div', { class: 'wide' }, el('span', { text: 'Honest band (cross-validated)' }), el('b', { text: fmtUsd(row.band_low_usd) + ' – ' + fmtUsd(row.band_high_usd) })),
+        el('div', { class: 'wide' }, el('span', { text: 'Implied value across ' + DATA.validation.bootstrap.draws + ' refits (p10–p90)' }), el('b', { text: fmtUsd(row.implied_p10_usd) + ' – ' + fmtUsd(row.implied_p90_usd) })),
+        el('div', null, el('span', { text: 'Verdict holds in' }), el('b', { text: row.stability_pct + '% of refits' })),
         el('div', null, el('span', { text: 'Local cross-check' }), el('b', { text: fmtUsd(row.local_value_usd) })),
         el('div', null, el('span', { text: 'Nearest peers say' }), el('b', { text: row.peers.length ? row.peers.map(function (p) { return p.ratio.toFixed(2) + 'x'; }).join(' · ') : '—' }))
       ),
-      el('p', { class: 'sub', text: 'The page re-reads this row off the published curve as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' An implied value is this board\'s own claim about a launch that may never happen, not a price and not a promise. The band is the model\'s own measured error: half of all blind readings in cross-validation land inside it. The local cross-check ignores the curve entirely — the median cap-per-TVL of the eight trading protocols nearest this one in size, times this TVL. Where the two readings sit near each other the number has two witnesses; where they part, trust neither blindly.' })
+      el('p', { class: 'sub', text: 'The page re-reads this row off the published curve as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' An implied value is this board\'s own claim about a launch that may never happen, not a price and not a promise. The band is the model\'s own measured error: half of all blind readings in cross-validation land inside it. The stability figure is the share of ' + DATA.validation.bootstrap.draws + ' refits of the curve — each on a resampled comp set — in which this row\'s verdict comes out the same; a row whose value moves but whose verdict holds is a row to act on, and a low one means the verdict itself is fragile. The local cross-check ignores the curve entirely — the median cap-per-TVL of the eight trading protocols nearest this one in size, times this TVL. Where the two readings sit near each other the number has two witnesses; where they part, trust neither blindly.' })
     ));
     panel.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Nearest trading peers' }),

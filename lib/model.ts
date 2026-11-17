@@ -4,11 +4,13 @@
 // a launch is worth: they are what the market actually paid for TVL like this. So the model first
 // fits a size curve to them — log10(market cap) against log10(TVL), least squares, with a per-
 // category correction — then reads every pre-token protocol's implied value off that curve, adjusted
-// for its seven-day TVL growth and for how long it has run with no token. The fit is tested three
-// ways, all blind: a two-fold split by slug, a five-fold cross-validation, and a time split that
-// fits on the older half of the comps and prices the newer — the test shaped like the job itself.
-// The cross-validated median miss becomes every row's stated band, and a second, local reading
-// (the nearest comps' own cap-per-TVL) is set beside the curve's as a cross-check, with the
+// for its seven-day TVL growth and for how long it has run with no token. The fit is tested four
+// ways, all blind: a two-fold split by slug, a five-fold cross-validation, a time split that
+// fits on the older half of the comps and prices the newer — the test shaped like the job itself —
+// and a bootstrap that refits the curve on resamples of the comps and re-decides every row's
+// verdict on each refit, so the board states how much of itself survives the comp set being
+// reshuffled. The cross-validated median miss becomes every row's stated band, and a second, local
+// reading (the nearest comps' own cap-per-TVL) is set beside the curve's as a cross-check, with the
 // nearest trading peers named. No protocol name is ever special-cased; one function scores every
 // row, and the page recomputes each row from the same figures so code and board agree.
 //
@@ -194,7 +196,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the board's rows carry it. */
-export const MODEL_VERSION = 'launch-radar-3';
+export const MODEL_VERSION = 'launch-radar-4';
 
 /**
  * Categories whose TVL is other people's assets in transit — staked or restaked for the
@@ -402,6 +404,114 @@ export function timeSplitTest(comps: SnapshotProtocol[], asOf: string, model: Mo
   if (fitOn.length < 10 || testOn.length === 0) return { tested: 0, median_multiple: 0, within_2x_pct: 0 };
   const curve = fitCurve(fitOn, model);
   return summariseMisses(testOn.map((p) => missOf(curve, p)));
+}
+
+/** The bootstrap's verdict: how much of the fitted curve — and of the board's verdicts — survives resampling the comps. */
+export interface BootstrapTest {
+  draws: number;
+  /** The fitted slope across the refits: 5th, 50th and 95th percentiles. */
+  slope_p5: number;
+  slope_p50: number;
+  slope_p95: number;
+  /** The fitted intercept across the refits: 5th, 50th and 95th percentiles. */
+  intercept_p5: number;
+  intercept_p50: number;
+  intercept_p95: number;
+  /** The median row's verdict stability across the board, in per cent. */
+  median_stability_pct: number;
+  /** The share of rows whose verdict holds in at least 90% of the refits, in per cent. */
+  rows_stable_pct: number;
+}
+
+/** A deterministic generator (mulberry32) so two runs write the same bytes: a resampling test that moved between runs would be noise, not evidence. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The `q` quantile of a sorted list, clamped to its ends. */
+function quantile(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)))]!;
+}
+
+/**
+ * The bootstrap: refit the size curve on `draws` resamples of the comps, each drawn with
+ * replacement from the same comp set, and return every refitted curve with the spread of the
+ * slope and intercept. The other three tests ask how far blind readings land from the truth;
+ * this one asks a different question — how much of the curve itself is the comp set, and how
+ * much would move if the set were reshuffled. A slope that wanders widely across refits is a
+ * curve the board should not lean on, and the per-row stability below says the same thing row
+ * by row, in the verdict's own terms. The seed is fixed, so the resamples — and the board —
+ * are identical on every run.
+ */
+export function bootstrapSpread(comps: SnapshotProtocol[], model: ModelConstants = MODEL, draws = 200): {
+  draws: number;
+  curves: SizeCurve[];
+  slope_p5: number;
+  slope_p50: number;
+  slope_p95: number;
+  intercept_p5: number;
+  intercept_p50: number;
+  intercept_p95: number;
+} {
+  const rng = mulberry32(0xc0ffee);
+  const curves: SizeCurve[] = [];
+  for (let d = 0; d < draws; d++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < comps.length; i++) sample.push(comps[Math.floor(rng() * comps.length)]!);
+    curves.push(fitCurve(sample, model));
+  }
+  const slopes = curves.map((c) => c.slope).sort((a, b) => a - b);
+  const intercepts = curves.map((c) => c.intercept).sort((a, b) => a - b);
+  return {
+    draws,
+    curves,
+    slope_p5: round4(quantile(slopes, 0.05)),
+    slope_p50: round4(quantile(slopes, 0.5)),
+    slope_p95: round4(quantile(slopes, 0.95)),
+    intercept_p5: round4(quantile(intercepts, 0.05)),
+    intercept_p50: round4(quantile(intercepts, 0.5)),
+    intercept_p95: round4(quantile(intercepts, 0.95)),
+  };
+}
+
+/**
+ * One row's stability across the refitted curves: its implied value on each refit, and how often
+ * the verdict that value gives is the verdict the board reports. A row whose value moves but
+ * whose verdict holds is a row the farmer can act on; a row whose verdict flips when the comp
+ * set is reshuffled is a row the board flags, not one it hides.
+ */
+export function rowStability(
+  p: SnapshotProtocol,
+  asOf: string,
+  reading: Reading,
+  econ: FarmEconomics,
+  drawCurves: SizeCurve[],
+  model: ModelConstants = MODEL,
+): { stability_pct: number; implied_p10_usd: number; implied_p90_usd: number } {
+  if (drawCurves.length === 0) {
+    return { stability_pct: 100, implied_p10_usd: reading.implied, implied_p90_usd: reading.implied };
+  }
+  const implieds: number[] = [];
+  let stable = 0;
+  for (const curve of drawCurves) {
+    const r = impliedValue(p, asOf, curve, model);
+    implieds.push(r.implied);
+    if (farmEconomics(p, r.implied, r.age, model).verdict === econ.verdict) stable++;
+  }
+  implieds.sort((a, b) => a - b);
+  return {
+    stability_pct: Math.round((stable / drawCurves.length) * 1000) / 10,
+    implied_p10_usd: implieds[Math.floor(0.1 * implieds.length)]!,
+    implied_p90_usd: implieds[Math.floor(0.9 * implieds.length)]!,
+  };
 }
 
 /** A trading peer the detail view sets beside a reading: the market's own figures, not a model's. */
@@ -673,6 +783,11 @@ export interface BoardRow {
   local_value_usd: number;
   /** The nearest trading peers, the exhibits the detail view sets beside the reading. */
   peers: PeerComp[];
+  /** The share of bootstrap refits in which this row's verdict comes out the same, in per cent. */
+  stability_pct: number;
+  /** The row's implied value across the bootstrap refits: 10th and 90th percentiles. */
+  implied_p10_usd: number;
+  implied_p90_usd: number;
   model: {
     curve_value_usd: number;
     category_factor: number;
@@ -713,6 +828,11 @@ export interface RadarRow {
   breakeven_value_usd: number;
   cautious_net_usd: number;
   peers: PeerComp[];
+  /** The share of bootstrap refits in which this row's verdict comes out the same, in per cent. */
+  stability_pct: number;
+  /** The row's implied value across the bootstrap refits: 10th and 90th percentiles. */
+  implied_p10_usd: number;
+  implied_p90_usd: number;
   steps: string[];
 }
 
@@ -739,8 +859,8 @@ export interface RadarData {
   model: ModelConstants;
   model_version: string;
   curve: SizeCurve;
-  /** The validation suite: the same curve machinery, tested blind three ways. */
-  validation: { blind: BlindTest; cross: BlindTest; time: BlindTest };
+  /** The validation suite: the same curve machinery, tested blind four ways. */
+  validation: { blind: BlindTest; cross: BlindTest; time: BlindTest; bootstrap: BootstrapTest };
   /** The comps themselves, compact, for the model panel's chart of the fit. */
   comps: { slug: string; name: string; category: string | null; tvl_usd: number; mcap_usd: number }[];
   watchlist_size: number;
@@ -757,7 +877,7 @@ export interface RadarData {
  * the fitted curve and ranked by implied value. Ranks are 1..N and values never rise as rank
  * ascends; equal values are ordered by TVL, then slug, so two runs write the same bytes.
  */
-export function buildBoard(snapshot: Snapshot, curve: SizeCurve, comps: SnapshotProtocol[], bandMultiple: number, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, curve: SizeCurve, comps: SnapshotProtocol[], bandMultiple: number, model: ModelConstants = MODEL, drawCurves: SizeCurve[] = []): BoardRow[] {
   const watch = new Set(snapshot.watchlist);
   const chosen = snapshot.protocols.filter((p) => watch.has(p.slug) || isRankable(p));
   const scored = chosen.map((p) => {
@@ -789,6 +909,7 @@ export function buildBoard(snapshot: Snapshot, curve: SizeCurve, comps: Snapshot
     band_high_usd: Math.round(s.reading.implied * bandMultiple),
     local_value_usd: localValue(s.p, comps),
     peers: nearestComps(s.p, comps),
+    ...rowStability(s.p, snapshot.as_of, s.reading, s.econ, drawCurves, model),
     model: {
       curve_value_usd: s.reading.curve_value,
       category_factor: s.reading.category_factor,
@@ -849,23 +970,41 @@ export function radarRow(row: BoardRow): RadarRow {
     breakeven_value_usd: row.farm.breakeven_value_usd,
     cautious_net_usd: row.farm.cautious_net_usd,
     peers: row.peers,
+    stability_pct: row.stability_pct,
+    implied_p10_usd: row.implied_p10_usd,
+    implied_p90_usd: row.implied_p90_usd,
     steps: row.farm_steps,
   };
 }
 
-/** Everything the dashboard renders, from the snapshot: fit the curve, test it three ways, build the board. */
+/** Everything the dashboard renders, from the snapshot: fit the curve, test it four ways, build the board. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const comps = snapshot.protocols.filter(isComp);
   const curve = fitCurve(comps, model);
   const blind = blindTest(comps, model);
   const cross = crossValidate(comps, model);
   const time = timeSplitTest(comps, snapshot.as_of, model);
+  const boot = bootstrapSpread(comps, model);
   const bandMultiple = cross.median_multiple > 0 ? cross.median_multiple : blind.median_multiple;
-  const board = buildBoard(snapshot, curve, comps, bandMultiple, model);
+  const board = buildBoard(snapshot, curve, comps, bandMultiple, model, boot.curves);
   const live = liveRows(snapshot);
   const watch = new Set(snapshot.watchlist);
   const counts = { farm: 0, thin: 0, skip: 0 };
   for (const r of board) counts[r.farm.verdict]++;
+  const stabilities = board.map((r) => r.stability_pct).sort((a, b) => a - b);
+  const medianStability = stabilities.length > 0 ? stabilities[Math.floor(stabilities.length / 2)]! : 0;
+  const rowsStable = board.filter((r) => r.stability_pct >= 90).length;
+  const bootstrap: BootstrapTest = {
+    draws: boot.draws,
+    slope_p5: boot.slope_p5,
+    slope_p50: boot.slope_p50,
+    slope_p95: boot.slope_p95,
+    intercept_p5: boot.intercept_p5,
+    intercept_p50: boot.intercept_p50,
+    intercept_p95: boot.intercept_p95,
+    median_stability_pct: medianStability,
+    rows_stable_pct: board.length > 0 ? Math.round((rowsStable / board.length) * 1000) / 10 : 0,
+  };
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -873,7 +1012,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model,
     model_version: MODEL_VERSION,
     curve,
-    validation: { blind, cross, time },
+    validation: { blind, cross, time, bootstrap },
     comps: comps.map((p) => ({ slug: p.slug, name: p.name, category: p.category, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
@@ -911,6 +1050,9 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     }
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0 || r.implied_value_usd > 100_000_000_000_000) {
       return `${r.slug} has implied value ${r.implied_value_usd}`;
+    }
+    if (!(r.stability_pct >= 0 && r.stability_pct <= 100) || r.implied_p10_usd <= 0 || r.implied_p90_usd < r.implied_p10_usd) {
+      return `${r.slug} has a broken bootstrap stability reading`;
     }
   }
   return null;
