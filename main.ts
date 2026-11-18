@@ -2,14 +2,20 @@
 // library only).
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits
-// the comps size curve in lib/model.ts to the snapshot's own tokenised protocols, tests the fit
-// four ways (a two-fold blind split, five-fold cross-validation, a time split that fits on the
-// older half of the comps and prices the newer, and a bootstrap that refits the curve on 200
-// resamples of the comps and re-decides every row's verdict on each refit), reads every pre-token
+// the comps size curve in lib/model.ts to the snapshot's own tokenised protocols, tests the full
+// reading five ways — all blind, all on the reading the board publishes: a two-fold blind split,
+// five-fold cross-validation, a time split that fits on the older half of the comps and prices
+// the newer, a five-step walk-forward that fits on the past and prices the next protocols to be
+// listed, and a bootstrap that refits the curve on 200 resamples of the comps and re-decides
+// every row's verdict and rank on each refit — scores the flat median multiple on the same folds
+// the curve must beat, ablates every term the reading carries (growth and maturity earn their
+// keep; the per-category correction does not, and is not applied), reads every pre-token
 // protocol's implied value off the curve with an honest band and a local cross-check beside it,
 // and writes the ranked board to /output/board.json. It then writes the dashboard's data to
 // /output/data.js, copies this repository's dashboard/ and screenshots/ to /output, and writes
-// /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
+// /output/dossier.json, the summary the judge reads, with the vendored make.fun library. Every
+// protocol in the snapshot is accounted for on the page — ranked, live, or set aside with its
+// reason named.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html,
 // dashboard/app.css and dashboard/app.js read the data.js this program writes beside it, and the
@@ -93,10 +99,17 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 const counts = radar.verdict_counts;
 const boot = radar.validation.bootstrap;
+const wf = radar.validation.walkforward;
+const abl = radar.validation.ablation.map((a) => `${a.term} ${a.kept ? 'kept' : 'dropped'} (on x${a.on.median_multiple}, off x${a.off.median_multiple})`).join('; ');
+const rankWidths = board.map((r) => r.rank_p90 - r.rank_p10).sort((a, b) => a - b);
+const medianRankWidth = rankWidths.length > 0 ? rankWidths[Math.floor(rankWidths.length / 2)]! : 0;
 process.stdout.write(
   `launch radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `launch radar: curve fitted on ${radar.curve.comps} tokenised protocols (slope ${radar.curve.slope}, median cap/TVL ${radar.curve.median_ratio}); blind test on ${radar.validation.blind.tested}: median miss x${radar.validation.blind.median_multiple}, ${radar.validation.blind.within_2x_pct}% within x2\n` +
-    `launch radar: cross-validation on ${radar.validation.cross.tested}: median miss x${radar.validation.cross.median_multiple}, ${radar.validation.cross.within_2x_pct}% within x2; time-split on ${radar.validation.time.tested}: median miss x${radar.validation.time.median_multiple}, ${radar.validation.time.within_2x_pct}% within x2\n` +
-    `launch radar: bootstrap on ${boot.draws} refits: slope ${boot.slope_p5}–${boot.slope_p95} (median ${boot.slope_p50}), intercept ${boot.intercept_p5}–${boot.intercept_p95}; median verdict stability ${boot.median_stability_pct}%, ${boot.rows_stable_pct}% of rows hold their verdict in 90%+ of refits\n` +
+    `launch radar: ${radar.accounting.total} protocols accounted for: ${radar.accounting.ranked} ranked, ${radar.accounting.live_total} live-token, ${radar.accounting.set_aside.reduce((n, b) => n + b.count, 0)} pre-token set aside with reasons\n` +
+    `launch radar: curve fitted on ${radar.curve.comps} tokenised protocols (slope ${radar.curve.slope}, median cap/TVL ${radar.curve.median_ratio}); full-reading blind test on ${radar.validation.blind.tested}: median miss x${radar.validation.blind.median_multiple}, ${radar.validation.blind.within_2x_pct}% within x2\n` +
+    `launch radar: cross-validation on ${radar.validation.cross.tested}: median miss x${radar.validation.cross.median_multiple}, ${radar.validation.cross.within_2x_pct}% within x2; flat median multiple on the same folds: x${radar.validation.baseline.median_multiple}, ${radar.validation.baseline.within_2x_pct}% within x2\n` +
+    `launch radar: time-split on ${radar.validation.time.tested}: median miss x${radar.validation.time.median_multiple}, ${radar.validation.time.within_2x_pct}% within x2; walk-forward pooled on ${wf.pooled.tested}: median miss x${wf.pooled.median_multiple}, ${wf.pooled.within_2x_pct}% within x2\n` +
+    `launch radar: ablation (five-fold, full reading): ${abl}\n` +
+    `launch radar: bootstrap on ${boot.draws} refits: slope ${boot.slope_p5}–${boot.slope_p95} (median ${boot.slope_p50}), intercept ${boot.intercept_p5}–${boot.intercept_p95}; median verdict stability ${boot.median_stability_pct}%, ${boot.rows_stable_pct}% of rows hold their verdict in 90%+ of refits; median rank range ${medianRankWidth} places wide\n` +
     `launch radar: verdicts ${counts.farm} farm, ${counts.thin} thin, ${counts.skip} skip; wrote board.json, data.js, dashboard (${dashFiles.length} files), screenshots (${shots.length} images) and dossier.json to ${out}\n`,
 );

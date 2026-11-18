@@ -8,7 +8,7 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', verdict: 'all', wl: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', verdict: 'all', wl: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null, budget: 1000 };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -36,7 +36,8 @@
   // The model in one function: the page refits nothing, but it re-reads a row's implied value off
   // the published curve from the row's raw figures — TVL, seven-day change, age — with the same
   // constants data.js carries, so the number on screen and the number in board.json are visibly
-  // the same arithmetic, to the dollar.
+  // the same arithmetic, to the dollar. No per-category correction: the ablation fitted one,
+  // measured it blind, and it earned nothing, so the reading leaves it out.
   function impliedOf(row) {
     var curve = DATA.curve;
     var m = DATA.model;
@@ -45,7 +46,7 @@
     var growthMult = 1 + (growthPct / 100) * m.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? m.unknown_age_days : row.age_days;
     var maturityMult = m.maturity_floor + (Math.min(Math.max(age, 0), m.maturity_days) / m.maturity_days) * m.maturity_range;
-    return Math.max(1, Math.round(base * row.category_factor * growthMult * maturityMult));
+    return Math.max(1, Math.round(base * growthMult * maturityMult));
   }
 
   function el(tag, attrs) {
@@ -112,12 +113,32 @@
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (key === 'net') { av = a.net_usd; bv = b.net_usd; }
+      else if (key === 'hour') { av = a.net_per_hour_usd; bv = b.net_per_hour_usd; }
       else if (key === 'stability') { av = a.stability_pct; bv = b.stability_pct; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
       return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
     });
+  }
+
+  // The farm portfolio: the best set of farm plans under a capital budget, greedy by net per
+  // dollar of capital — the plan that pays most for each dollar in goes in first, until the
+  // budget is spent. Only farm and thin verdicts are candidates: a skip loses money at any size.
+  // Each plan's hours come from its own net and net-per-hour, so the portfolio's hours are the
+  // model's, not a second arithmetic.
+  function portfolioFor(budget) {
+    var cands = DATA.rows.filter(function (r) { return r.verdict !== 'skip' && r.net_usd > 0; })
+      .sort(function (a, b) { return (b.net_usd / b.capital_usd) - (a.net_usd / a.capital_usd) || b.net_usd - a.net_usd; });
+    var plans = [], capital = 0, net = 0, hours = 0;
+    cands.forEach(function (r) {
+      if (capital + r.capital_usd > budget) return;
+      plans.push(r);
+      capital += r.capital_usd;
+      net += r.net_usd;
+      hours += r.net_per_hour_usd > 0 ? r.net_usd / r.net_per_hour_usd : 0;
+    });
+    return { plans: plans, capital: capital, net: Math.round(net * 100) / 100, hours: hours, perHour: hours > 0 ? Math.round((net / hours) * 100) / 100 : 0 };
   }
 
   function header() {
@@ -136,20 +157,23 @@
 
   function lede() {
     var c = DATA.verdict_counts;
+    var a = DATA.accounting;
+    var pf = portfolioFor(1000);
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', null,
           DATA.board_size + ' protocols that record no token, ranked by ',
           el('span', { class: 'hl', text: 'what their launch would be worth' })
         ),
-        el('p', { text: 'Every protocol here records no token on DefiLlama — that is a record, not a proof, and the board says so. The watchlist of ' + DATA.watchlist_size + ' protocols at or above ' + fmtUsd(DATA.floor_usd) + ' of TVL is the floor, not the ceiling: the radar also ranks ' + DATA.early_size + ' early protocols below it, and nets every farm plan to a verdict before it asks for your time.' })
+        el('p', { text: 'Every protocol here records no token on DefiLlama — that is a record, not a proof, and the board says so. The watchlist of ' + DATA.watchlist_size + ' protocols at or above ' + fmtUsd(DATA.floor_usd) + ' of TVL is the floor, not the ceiling: the radar also ranks ' + DATA.early_size + ' early protocols below it, and nets every farm plan to a verdict before it asks for your time. Nothing in the snapshot goes unaccounted for: all ' + a.total + ' protocols are ranked, live, or set aside with the reason named.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', null, DATA.watchlist_size + ' / ' + DATA.watchlist_size)),
         el('div', { class: 'fact' }, el('span', { text: 'Rows ranked' }), el('b', { text: String(DATA.board_size) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Protocols accounted for' }), el('b', { text: a.total + ' of ' + a.total })),
         el('div', { class: 'fact' }, el('span', { text: 'Verdicts: farm' }), el('b', null, el('i', { text: String(c.farm) }), ' farm · ' + c.thin + ' thin')),
-        el('div', { class: 'fact' }, el('span', { text: 'Time-split test, median miss' }), el('b', { text: 'x' + DATA.validation.time.median_multiple.toFixed(2) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Verdicts that hold under resampling' }), el('b', { text: DATA.validation.bootstrap.rows_stable_pct + '% of rows' }))
+        el('div', { class: 'fact' }, el('span', { text: 'Cross-validation, median miss' }), el('b', { text: 'x' + DATA.validation.cross.median_multiple.toFixed(2) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Best $1,000 farm portfolio' }), el('b', { text: fmtMoney(pf.net) + ' net · ' + pf.plans.length + ' plans' }))
       )
     );
   }
@@ -160,9 +184,9 @@
     return el('section', { class: 'method' },
       el('div', null,
         el('h2', { text: 'How the number is made' }),
-        el('p', { text: 'The snapshot\'s own ' + curve.comps + ' tokenised protocols are the only guide: they are what the market actually paid for TVL like this (median ' + curve.median_ratio.toFixed(2) + 'x TVL). A size curve is fitted to them — log10(market cap) on log10(TVL), slope ' + curve.slope.toFixed(2) + ' — with a per-category correction, and each pre-token protocol is read off it, moved by its seven-day growth and by how long it has run with no token. Pass-through staking books are left out of the fit: their TVL is other people\'s assets, and their tokens price a fee sliver, not the pile.' }),
-        el('div', { class: 'formula', text: 'implied = 10^(' + curve.intercept.toFixed(2) + ' + ' + curve.slope.toFixed(2) + ' x log10 TVL) x category x (1 + clamp(7d, ' + m.growth_floor + ', ' + m.growth_cap + ') x ' + m.growth_weight + ') x maturity(age)' }),
-        el('p', { text: 'Tested blind four ways before it is trusted. Split in two by slug, each half priced by a curve fitted on the other alone: median miss x' + DATA.validation.blind.median_multiple.toFixed(2) + ', ' + DATA.validation.blind.within_2x_pct + '% within x2. Five-fold cross-validation, every comp read exactly once blind: x' + DATA.validation.cross.median_multiple.toFixed(2) + ', ' + DATA.validation.cross.within_2x_pct + '% within x2. And a time split — fitted on the older half of the comps, made to price the newer: x' + DATA.validation.time.median_multiple.toFixed(2) + ', ' + DATA.validation.time.within_2x_pct + '% within x2. The time split is the test shaped like the job itself, and the cross-validated miss is the band every row carries. The fourth test is a bootstrap: the curve is refitted on ' + DATA.validation.bootstrap.draws + ' resamples of the comps, and every row\'s verdict is re-decided on each refit — the board states how often each verdict survives, because a verdict that flips when the comp set is reshuffled is not one to act on. Wide bands — which is why every row shows its working, and why the board ranks rather than promises.' })
+        el('p', { text: 'The snapshot\'s own ' + curve.comps + ' tokenised protocols are the only guide: they are what the market actually paid for TVL like this (median ' + curve.median_ratio.toFixed(2) + 'x TVL). A size curve is fitted to them — log10(market cap) on log10(TVL), slope ' + curve.slope.toFixed(2) + ' — and each pre-token protocol is read off it, moved by its seven-day growth and by how long it has run with no token. Pass-through staking books are left out of the fit: their TVL is other people\'s assets, and their tokens price a fee sliver, not the pile. Every term the reading carries is one the blind tests kept: growth and maturity each improve the blind miss when they are on, and a per-category correction does not — it was fitted, measured, and left out, so the model stays the curve and its two earned adjustments.' }),
+        el('div', { class: 'formula', text: 'implied = 10^(' + curve.intercept.toFixed(2) + ' + ' + curve.slope.toFixed(2) + ' x log10 TVL) x (1 + clamp(7d, ' + m.growth_floor + ', ' + m.growth_cap + ') x ' + m.growth_weight + ') x maturity(age)' }),
+        el('p', { text: 'Tested blind five ways before it is trusted — and every test prices the full reading the board prints, never the curve alone. Split in two by slug, each half priced by a curve fitted on the other alone: median miss x' + DATA.validation.blind.median_multiple.toFixed(2) + ', ' + DATA.validation.blind.within_2x_pct + '% within x2. Five-fold cross-validation, every comp read exactly once blind: x' + DATA.validation.cross.median_multiple.toFixed(2) + ', ' + DATA.validation.cross.within_2x_pct + '% within x2. A time split — fitted on the older half of the comps, made to price the newer: x' + DATA.validation.time.median_multiple.toFixed(2) + ', ' + DATA.validation.time.within_2x_pct + '% within x2. A five-step walk-forward — fitted on the past, made to price the next protocols to be listed, five times over: x' + DATA.validation.walkforward.pooled.median_multiple.toFixed(2) + ' pooled, ' + DATA.validation.walkforward.pooled.within_2x_pct + '% within x2. The walk-forward is the test shaped like the job itself, and the cross-validated miss is the band every row carries. The fifth test is a bootstrap: the curve is refitted on ' + DATA.validation.bootstrap.draws + ' resamples of the comps, and every row\'s verdict and rank are re-decided on each refit — the board states how often each verdict survives and how far each rank wanders, because a verdict that flips when the comp set is reshuffled is not one to act on. Against the naive reading — every comp priced at the flat median cap-per-TVL, x' + DATA.validation.baseline.median_multiple.toFixed(2) + ' on the same folds — the fitted model earns its keep. Wide bands — which is why every row shows its working, and why the board ranks rather than promises.' })
       ),
       el('div', { class: 'legend' },
         el('div', null, el('span', { class: 'chip farm', text: 'FARM' }), el('span', { text: 'the modelled slice clears the plan\'s all-in cost by $20 or more' })),
@@ -220,14 +244,22 @@
     }
     var chart = el('div', { class: 'chart' });
     chart.innerHTML = chartSvg();
-    var cats = Object.keys(DATA.curve.category_counts).sort(function (a, b) { return DATA.curve.category_counts[b] - DATA.curve.category_counts[a]; }).slice(0, 9);
-    var fbody = el('tbody');
-    cats.forEach(function (c) {
-      var f = DATA.curve.category_factors[c];
-      fbody.appendChild(el('tr', null,
-        el('td', { text: c }),
-        el('td', { class: 'num', text: String(DATA.curve.category_counts[c]) }),
-        el('td', { class: 'num', text: f ? 'x' + f.toFixed(2) : 'x1.00 (thin)' })
+    var abody = el('tbody');
+    v.ablation.forEach(function (a) {
+      abody.appendChild(el('tr', null,
+        el('td', { text: a.term }),
+        el('td', { class: 'num', text: 'x' + a.on.median_multiple.toFixed(2) }),
+        el('td', { class: 'num', text: 'x' + a.off.median_multiple.toFixed(2) }),
+        el('td', { class: 'num', text: a.kept ? 'KEPT' : 'DROPPED' })
+      ));
+    });
+    var wbody = el('tbody');
+    v.walkforward.steps.forEach(function (s, i) {
+      wbody.appendChild(el('tr', null,
+        el('td', { class: 'num', text: 'Step ' + (i + 1) }),
+        el('td', { class: 'num', text: s.train_to || '—' }),
+        el('td', { class: 'num', text: String(s.tested) }),
+        el('td', { class: 'num', text: 'x' + s.median_multiple.toFixed(2) })
       ));
     });
     return el('section', { class: 'fit', id: 'fit' },
@@ -235,26 +267,90 @@
       el('div', { class: 'fit-grid' },
         el('div', null,
           chart,
-          el('p', { class: 'sub', text: 'Each point is one of the ' + DATA.curve.comps + ' tokenised protocols the curve learns from: its TVL against the market cap the market actually gave it, both on log scales. The dashed lines are the cross-validated band — half of all blind readings land between them. The spread is the honest picture: TVL explains a launch\'s worth only so far, and the board\'s bands say so on every row.' })
+          el('p', { class: 'sub', text: 'Each point is one of the ' + DATA.curve.comps + ' tokenised protocols the curve learns from: its TVL against the market cap the market actually gave it, both on log scales. The dashed lines are the cross-validated band — half of all blind readings land between them. The spread is the honest picture: TVL explains a launch\'s worth only so far, and the board\'s bands say so on every row.' }),
+          el('h3', { class: 'fit-h', text: 'Walk-forward, step by step' }),
+          el('table', { class: 'factors' },
+            el('thead', null, el('tr', null, el('th', { text: 'Step' }), el('th', { text: 'Fitted to' }), el('th', { text: 'Priced' }), el('th', { text: 'Median miss' }))),
+            wbody
+          ),
+          el('p', { class: 'sub', text: 'Five expanding windows: at each step the curve is fitted on the earliest protocols alone and made to price the next ones to be listed — the past pricing the future, five times over.' })
         ),
         el('div', null,
           el('div', { class: 'tests' },
             testRow('Time split', v.time, 'fitted on the older half, priced on the newer — the job\'s own shape'),
+            testRow('Walk-forward', v.walkforward.pooled, 'five expanding windows pooled — the past pricing the future'),
             testRow('Blind split', v.blind, 'two halves by slug, each priced by the other'),
             testRow('Cross-validation', v.cross, 'five folds, every comp read once blind'),
+            testRow('Flat multiple', v.baseline, 'the naive reading: every comp at the median cap-per-TVL'),
             el('div', { class: 'test' },
-              el('div', null, el('b', { text: 'Bootstrap stability' }), el('span', { class: 'sub', text: 'curve refitted on ' + v.bootstrap.draws + ' resamples of the comps; every verdict re-decided on each' })),
+              el('div', null, el('b', { text: 'Bootstrap stability' }), el('span', { class: 'sub', text: 'curve refitted on ' + v.bootstrap.draws + ' resamples of the comps; every verdict and rank re-decided on each' })),
               el('span', { class: 'num', text: 'slope ' + v.bootstrap.slope_p5.toFixed(2) + '–' + v.bootstrap.slope_p95.toFixed(2) + ' · ' + v.bootstrap.median_stability_pct + '% hold' })
             )
           ),
-          el('h3', { class: 'fit-h', text: 'Category corrections' }),
+          el('h3', { class: 'fit-h', text: 'Ablation — every term earns its keep or goes' }),
           el('table', { class: 'factors' },
-            el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Comps' }), el('th', { text: 'Factor' }))),
-            fbody
+            el('thead', null, el('tr', null, el('th', { text: 'Term' }), el('th', { text: 'With it' }), el('th', { text: 'Without it' }), el('th', { text: 'Verdict' }))),
+            abody
           ),
-          el('p', { class: 'sub', text: 'A category earns a correction only from six or more trading peers, clamped so a thin category cannot rule the board.' })
+          el('p', { class: 'sub', text: 'Each term is scored blind with it on and with it off, on the same five folds, by median miss. Growth and maturity earn their keep; the per-category correction does not, so the model does not apply it — the table is the receipt.' })
         )
       )
+    );
+  }
+
+  function accountingPanel() {
+    var a = DATA.accounting;
+    var setAsideTotal = a.set_aside.reduce(function (n, b) { return n + b.count; }, 0);
+    var rows = [{ label: 'Ranked on the board', count: a.ranked, detail: 'the whole watchlist plus every early protocol below the floor that passes the watchlist\'s own standard' }];
+    rows.push({ label: 'Live token — the comps', count: DATA.curve.comps, detail: 'tokenised protocols the curve was fitted on, shown at the market\'s own values' });
+    a.live_not_comps.forEach(function (b) { rows.push({ label: 'Live token — ' + b.label.toLowerCase(), count: b.count, detail: b.detail }); });
+    a.set_aside.forEach(function (b) { rows.push({ label: 'Set aside — ' + b.label.toLowerCase(), count: b.count, detail: b.detail }); });
+    var tbody = el('tbody');
+    rows.forEach(function (r) {
+      tbody.appendChild(el('tr', null,
+        el('td', { text: r.label }),
+        el('td', { class: 'num', text: String(r.count) }),
+        el('td', { text: r.detail })));
+    });
+    return el('section', { class: 'fit', id: 'accounting' },
+      el('h2', { text: 'Every protocol accounted for — ' + a.total + ' of ' + a.total }),
+      el('p', { class: 'sub', text: 'The snapshot holds ' + a.total + ' protocols. ' + a.ranked + ' are ranked on the board, ' + a.live_total + ' already trade, and ' + setAsideTotal + ' pre-token protocols are set aside — each under the first rule that catches it, so none goes missing silently.' }),
+      el('table', { class: 'factors' },
+        el('thead', null, el('tr', null, el('th', { text: 'Where it sits' }), el('th', { text: 'Count' }), el('th', { text: 'Why' }))),
+        tbody
+      )
+    );
+  }
+
+  function portfolioPanel() {
+    var pf = portfolioFor(state.budget);
+    var tbody = el('tbody');
+    pf.plans.forEach(function (r) {
+      tbody.appendChild(el('tr', null,
+        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', null, el('b', { text: r.name })),
+        el('td', { class: 'num', text: fmtUsd(r.capital_usd) }),
+        el('td', { class: 'num', text: fmtMoney(r.net_usd) }),
+        el('td', { class: 'num', text: fmtMoney(r.net_per_hour_usd) + '/h' }),
+        el('td', null, el('span', { class: 'chip ' + r.verdict, text: r.verdict.toUpperCase() }))));
+    });
+    var input = el('input', { type: 'number', id: 'budget', value: String(state.budget), min: '100', max: '100000', step: '100', 'aria-label': 'Farm capital budget in dollars' });
+    input.addEventListener('change', function () {
+      var n = parseInt(input.value, 10);
+      if (Number.isFinite(n) && n > 0) { state.budget = n; render(); }
+    });
+    return el('section', { class: 'fit', id: 'portfolio' },
+      el('h2', { text: 'The farm portfolio — one budget, the best plans it buys' }),
+      el('div', { class: 'controls' },
+        el('div', { class: 'field' }, el('label', { for: 'budget', text: 'Capital budget (USD)' }), input),
+        el('span', { class: 'count', text: pf.plans.length + ' plans · ' + fmtUsd(pf.capital) + ' in · net ' + fmtMoney(pf.net) + ' · ' + fmtMoney(pf.perHour) + '/h over ' + pf.hours.toFixed(1) + ' hours' })
+      ),
+      pf.plans.length === 0
+        ? el('p', { class: 'sub', text: 'No farm or thin plan fits that budget yet — raise it, or wait for a smaller protocol.' })
+        : el('table', { class: 'factors' },
+          el('thead', null, el('tr', null, el('th', { text: 'Rank' }), el('th', { text: 'Protocol' }), el('th', { text: 'Capital' }), el('th', { text: 'Net' }), el('th', { text: 'Net/hour' }), el('th', { text: 'Verdict' }))),
+          tbody),
+      el('p', { class: 'sub', text: 'Greedy by net per dollar of capital: the plan that pays most for each dollar in goes in first, until the budget is spent. Only farm and thin verdicts are candidates — a skip loses money at any size — and every plan here is the same costed plan its row carries, with its own hold-until date.' })
     );
   }
 
@@ -353,6 +449,7 @@
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
         el('td', { class: 'num ' + (r.net_usd >= 0 ? 'net-pos' : 'net-neg'), text: fmtMoney(r.net_usd) }),
+        el('td', { class: 'num ' + (r.net_per_hour_usd >= 0 ? 'net-pos' : 'net-neg'), text: fmtMoney(r.net_per_hour_usd) + '/h' }),
         el('td', { class: 'num' }, el('span', { class: 'stab ' + (r.stability_pct >= 90 ? 'hi' : r.stability_pct >= 70 ? 'mid' : 'lo'), title: 'This verdict in ' + r.stability_pct + '% of the ' + DATA.validation.bootstrap.draws + ' bootstrap refits', text: r.stability_pct + '%' })),
         el('td', null, el('span', { class: 'chip ' + r.verdict, text: r.verdict.toUpperCase() }))
       );
@@ -361,7 +458,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { text: 'Pre-token protocols, strongest implied launch value first. Net is the farm plan\'s modelled slice minus its all-in cost, and "Verdict holds" is the share of the model\'s 200 bootstrap refits in which the row\'s verdict comes out the same. Select a row for its reading and its plan.' }),
+          el('caption', { text: 'Pre-token protocols, strongest implied launch value first. Net is the farm plan\'s modelled slice minus its all-in cost, Net/hour is that net per hour of the farmer\'s own time, and "Verdict holds" is the share of the model\'s 200 bootstrap refits in which the row\'s verdict comes out the same. Select a row for its reading and its plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -370,6 +467,7 @@
             sortHeader('age', 'No token for'),
             sortHeader('implied', 'Implied value'),
             sortHeader('net', 'Farm net'),
+            sortHeader('hour', 'Net/hour'),
             sortHeader('stability', 'Verdict holds'),
             el('th', { scope: 'col', text: 'Verdict' })
           )),
@@ -443,18 +541,18 @@
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { text: fmtUsd(row.tvl_usd) })),
         el('div', null, el('span', { text: 'Curve value at this TVL' }), el('b', { text: fmtUsd(row.curve_value_usd) })),
-        el('div', null, el('span', { text: 'Category factor' }), el('b', { text: 'x' + row.category_factor.toFixed(2) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { text: fmtPct(row.change_7d) + ' (x' + row.growth_multiplier.toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'No token for' }), el('b', { text: fmtAge(row.age_days) + ' (x' + row.maturity_multiplier.toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'Listed since' }), el('b', { text: row.listed_at || 'unrecorded' })),
         el('div', { class: 'wide' }, el('span', { text: 'Implied launch value' }), el('b', { text: fmtUsd(row.implied_value_usd) })),
         el('div', { class: 'wide' }, el('span', { text: 'Honest band (cross-validated)' }), el('b', { text: fmtUsd(row.band_low_usd) + ' – ' + fmtUsd(row.band_high_usd) })),
         el('div', { class: 'wide' }, el('span', { text: 'Implied value across ' + DATA.validation.bootstrap.draws + ' refits (p10–p90)' }), el('b', { text: fmtUsd(row.implied_p10_usd) + ' – ' + fmtUsd(row.implied_p90_usd) })),
+        el('div', null, el('span', { text: 'Rank across refits (p10–p90)' }), el('b', { text: '#' + row.rank_p10 + '–#' + row.rank_p90 })),
         el('div', null, el('span', { text: 'Verdict holds in' }), el('b', { text: row.stability_pct + '% of refits' })),
         el('div', null, el('span', { text: 'Local cross-check' }), el('b', { text: fmtUsd(row.local_value_usd) })),
         el('div', null, el('span', { text: 'Nearest peers say' }), el('b', { text: row.peers.length ? row.peers.map(function (p) { return p.ratio.toFixed(2) + 'x'; }).join(' · ') : '—' }))
       ),
-      el('p', { class: 'sub', text: 'The page re-reads this row off the published curve as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' An implied value is this board\'s own claim about a launch that may never happen, not a price and not a promise. The band is the model\'s own measured error: half of all blind readings in cross-validation land inside it. The stability figure is the share of ' + DATA.validation.bootstrap.draws + ' refits of the curve — each on a resampled comp set — in which this row\'s verdict comes out the same; a row whose value moves but whose verdict holds is a row to act on, and a low one means the verdict itself is fragile. The local cross-check ignores the curve entirely — the median cap-per-TVL of the eight trading protocols nearest this one in size, times this TVL. Where the two readings sit near each other the number has two witnesses; where they part, trust neither blindly.' })
+      el('p', { class: 'sub', text: 'The page re-reads this row off the published curve as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : ' — which differs from the board: the data would be stale.') + ' An implied value is this board\'s own claim about a launch that may never happen, not a price and not a promise. The band is the model\'s own measured error: half of all blind readings in cross-validation land inside it. The stability figure is the share of ' + DATA.validation.bootstrap.draws + ' refits of the curve — each on a resampled comp set — in which this row\'s verdict comes out the same; a row whose value moves but whose verdict holds is a row to act on, and a low one means the verdict itself is fragile. The rank range is where the row lands when the whole board is re-read off each refit — a row whose rank wanders is a band, not a place. The local cross-check ignores the curve entirely — the median cap-per-TVL of the eight trading protocols nearest this one in size, times this TVL. Where the two readings sit near each other the number has two witnesses; where they part, trust neither blindly.' })
     ));
     panel.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Nearest trading peers' }),
@@ -474,6 +572,8 @@
         el('div', null, el('span', { text: 'All-in cost' }), el('b', { text: fmtMoney(row.cost_usd) })),
         el('div', null, el('span', { text: 'Break-even launch value' }), el('b', { text: fmtUsd(row.breakeven_value_usd) })),
         el('div', null, el('span', { text: 'Net if users get 5%, not 10%' }), el('b', { text: fmtMoney(row.cautious_net_usd) })),
+        el('div', null, el('span', { text: 'Net per hour of your time' }), el('b', { text: fmtMoney(row.net_per_hour_usd) + '/h' })),
+        el('div', null, el('span', { text: 'Hold until' }), el('b', { text: row.hold_until })),
         el('div', null, el('span', { text: 'Net' }), el('b', { text: fmtMoney(row.net_usd) }))
       ),
       el('div', { class: 'verdict-line' },
@@ -504,6 +604,8 @@
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     shell.appendChild(methodPanel());
     shell.appendChild(fitPanel());
+    shell.appendChild(accountingPanel());
+    shell.appendChild(portfolioPanel());
     shell.appendChild(el('p', { class: 'foot', text: 'Data: the sealed DefiLlama snapshot of ' + DATA.as_of + ', read once and never updated. "Records no token" is DefiLlama\'s record, not proof a token does not exist. Implied values are this entry\'s own model, stated in full above; a launch may never happen, and a farm plan is a costed suggestion, not advice.' }));
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
