@@ -1,97 +1,124 @@
-[![make.fun token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01)
-[![rank](https://make.fun/badge/token-radar-01/maezageryan-del/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01)
-[![reward](https://make.fun/badge/token-radar-01/maezageryan-del/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01)
+[![Bounty](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01)
+[![Rank](https://make.fun/badge/token-radar-01/maezageryan-del/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01)
+[![Reward](https://make.fun/badge/token-radar-01/maezageryan-del/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01)
 
-# Launch Radar
+# Launch Radar — a field guide to pre-token protocols
 
-A token launch radar for make.fun's token-radar-01. It reads the sealed DefiLlama snapshot,
-works out which protocols still record no token, prices what each one's launch would be worth
-off the snapshot's own evidence, and hands in a dashboard that ranks them — every row with a
-farm plan that is costed, netted and given a verdict.
+Launch Radar reads the sealed DefiLlama snapshot (758 protocols, as of
+2026-11-14), separates the protocols that already have a token from the ones
+that do not, prices every stand-alone pre-token protocol with a model fitted
+from the snapshot itself, and nets each one as a farming plan — expected drop
+minus gas, ramp and forgone yield — so the board answers two questions at a
+glance: what would this be worth if it launched, and is farming it worth the
+hours?
 
-## The model
+Run it with `node main.ts` (Node 22, standard library only, no network). It
+reads `/input/snapshot.json` by default (`--input <file|dir>` overrides) and
+writes `board.json`, `dashboard/` with a generated `data.js`, `screenshots/`
+and `dossier.json` to the output directory (`--output` or
+`MAKEFUN_OUTPUT_DIR`, default `/output`). Two runs are byte-identical: the
+only randomness is a seeded bootstrap.
 
-The snapshot's tokenised protocols are the only honest guide to a launch's worth: they are what
-the market actually paid for TVL like this. So `lib/model.ts`:
+## The universe, accounted for
 
-1. **Fits a size curve to the comps** — every protocol that trades (exchange tokens, bridged or
-   wrapped assets and pass-through staking books left out): log10(market cap) against log10(TVL),
-   least squares. Every term the reading carries is one the blind tests kept: growth and maturity
-   each improve the blind miss when they are on, and a per-category correction does not — it is
-   fitted, measured, and NOT applied, so the model stays the curve and its two earned adjustments.
-2. **Tests the full reading blind, five ways** — and every test prices the reading the board
-   prints, never the curve alone: a two-fold split by slug (each half priced by a curve fitted
-   on the other alone: median miss ×3.42, 32.2% within ×2); five-fold cross-validation, every
-   comp read exactly once blind (×3.38, 32.2%); a time split — fitted on the older half of the
-   comps, made to price the newer (×2.34, 44.1%); a five-step walk-forward — fitted on the past,
-   made to price the next protocols to be listed, five times over (pooled ×2.44, 48%); and a
-   bootstrap — the curve refitted on 200 resamples of the comps, every row's verdict and rank
-   re-decided on each refit (median verdict stability 91.5%, 52.5% of rows hold their verdict in
-   90%+ of refits). The walk-forward is the test shaped like the job itself: fit on the past,
-   read on launches still to come. The ablation scores every term with it on and with it off on
-   the same five folds (growth kept: ×3.38 on, ×3.61 off; maturity kept: ×3.38 on, ×3.62 off;
-   category correction dropped: ×3.41 on, ×3.38 off), and the flat median cap-per-TVL multiple —
-   the naive reading the curve must beat — scores ×4.20 on the same folds. The dashboard states
-   all of it next to the model, because a curve that hides its error is asking to be trusted
-   for the wrong reason.
-3. **Reads each pre-token protocol off the curve** — the curve's value for its TVL, moved by its
-   seven-day TVL growth (clamped) and by a maturity factor for how long it has run with no
-   token. One function scores every row; no name is special-cased. Every reading carries two
-   honesty checks beside it: a band (the implied value divided and multiplied by the
-   cross-validated median miss — half of all blind readings land inside it) and a local
-   cross-check that ignores the curve entirely, the median cap-per-TVL of the eight trading
-   protocols nearest in size, times this TVL. The detail view also names the three nearest
-   trading peers, with their real market caps, as exhibits. And every row carries its verdict
-   stability — the share of the 200 bootstrap refits in which its verdict comes out the same —
-   and its rank range across the refits, so a verdict that flips when the comp set is reshuffled
-   is flagged on the board itself, not hidden.
-4. **Ranks all of them** — 198 rows on this snapshot: the whole 40-protocol watchlist plus every
-   early protocol below the floor that passes the watchlist's own standard (not an exchange
-   book, not a versioned pool, not a wrapped, staked or bridged product of a token that trades).
-   And every protocol in the snapshot is accounted for: 198 ranked, 416 live-token, 144
-   pre-token set aside with the reason named — 758 of 758.
+All 758 protocols land in exactly one bucket, by stated rules:
 
-## The farm plans, netted
+| Bucket | Count | Rule |
+| --- | ---: | --- |
+| Ranked | 198 | Pre-token (no gecko id, no symbol), stand-alone, positive TVL |
+| Live token | 416 | Already records a token |
+| Bridge | 43 | Category Bridge or Canonical Bridge |
+| Liquid staking or restaking | 43 | Category Liquid Staking, Liquid Restaking or Restaked BTC |
+| Exchange custody | 42 | Category CEX, or a name led by an exchange brand |
+| Versioned release | 11 | Name ends in a version marker (V2, 2.0, …) |
+| Wrapped-or-staked name | 5 | Name carries the whole word wrapped, staked or staking |
+| No positive TVL | 0 | — |
 
-Each row's plan is derived from its own record — category mechanism, chains, TVL, age — in eight
-steps with a cost and a time on each: the seventh is a watch brief with its exit triggers, and
-the last does the maths out loud. The slice supposes a launch hands 10% of its implied value to
-users, split the way points programs split it: half evenly among qualifying wallets, half
-pro-rata to the farmed quarter of TVL. The cost is gas — three transactions to set up, one a
-week while held, at the cheapest chain the protocol runs on — plus 5% a year of stablecoin yield
-forgone on the capital. Slice minus cost is the net, and the net is the verdict: **FARM** (clears
-by $20+), **THIN** (above water, barely), **SKIP** (under water — usually a small wallet in a
-giant protocol, whose slice is a rounding error). The detail view also states the break-even
-launch value — what the token would have to be worth for the slice to exactly cover the cost —
-the net under a cautious scenario where users get 5%, not 10%, the net per hour of the farmer's
-own time, and the date the hold ends. On this snapshot: 39 farm, 75 thin, 84 skip. The farm
-portfolio section spends one budget greedily by net per dollar of capital across the farm and
-thin plans, so a reader with $1,000 sees the best plans it buys, the total net and the net per
-hour — not just a list of verdicts.
+All 40 watchlist protocols are on the board. Total implied value across the
+198 ranked rows is $1,737,348,109.
 
-## The dashboard
+## The reading
 
-`dashboard/` is a static page (no framework, no network) that `main.ts` fills from `data.js`:
-the ranked board first — sortable columns, one-click verdict chips with their counts, a count
-line that names the filters in force, and "Verdict holds" and "Net/hour" columns carrying each
-row's bootstrap verdict stability and its net per hour of farmer time; filters for search,
-category, farm verdict and watchlist-only; a detail panel per protocol showing the curve reading
-with its band, rank range and local cross-check, the nearest trading peers, the netted farm maths
-with its break-even, cautious scenario, net per hour and hold-until date, and the plan; a "fit,
-in the open" panel that draws the curve through the 90 comps it was fitted on, states the five
-blind tests, the ablation and the baseline, and tables the walk-forward steps; an accounting
-panel that places every one of the 758 protocols — ranked, live, or set aside with its reason;
-a farm portfolio that spends one budget across the best plans; and the live-token protocols set
-aside at the market's own values. The page re-reads every row's implied value off the published
-curve, so the number on screen and the number in `board.json` are the same arithmetic. Four
-screenshots are handed in: the board, a detail view, the farm-filtered board, and the fit panel.
+Comparables ("comps") are the 92 traded stand-alone protocols with positive
+TVL and market cap — the same stand-alone test as the board, so bridges,
+liquid-staking books, exchange custody, versioned releases and
+wrapped/staked names never price anything. On the comps, least squares on
+log–log scale gives the size curve
 
-## Run it
+    market cap ≈ 10^(3.958 + 0.394 · log10 TVL)
 
-```
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <snapshot.json>
-```
+and each pre-token protocol is read as
 
-Node 22.18+, standard library only. Writes `board.json`, `data.js`, `dashboard/`,
-`screenshots/` and `dossier.json` (via the kit's `vendor/makefun-board.ts`, unchanged) to the
-output directory. Two runs write the same bytes.
+    implied = curve(TVL) × (1 + clamp(7d %, −50, 100) × 0.0035)
+                        × (0.82 + 0.28 · min(age in days, 1095) / 1095)
+
+with unknown age taken as 365 days. Category factors are computed (median
+actual/curve per category with at least 6 comps, clamped to [1/2.2, 2.2]:
+Basis Trading ×1.77, RWA ×1.66, Dexs ×1.25, Yield ×0.91, Lending ×0.61) and
+reported, but **not applied** — the ablation below says they earn nothing
+blind, so the board does not take their help.
+
+## Validation — the full reading, held out
+
+Every test prices held-out comps with the full reading (curve refit on the
+training part only; growth and maturity are fixed constants). Miss is
+max(pred/actual, actual/pred).
+
+| Test | Median miss | Within ×2 | n |
+| --- | ---: | ---: | ---: |
+| Blind split (halves by slug hash, each priced by the other) | ×3.42 | 37.0% | 92 |
+| 5-fold cross-validation | ×3.28 | 35.9% | 92 |
+| Time split (fit older half by listing date, price newer) | ×2.06 | 48.6% | 35 |
+| Walk-forward (5 expanding windows, pooled) | ×2.21 | 42.0% | 50 |
+| Flat-multiple baseline (median cap/TVL, same folds) | ×4.56 | 31.5% | 92 |
+
+Ablation (5-fold): full reading ×3.28 · growth off ×3.33 · maturity off
+×3.27 · category factors on ×3.25 with fewer inside ×2 (34.8% vs 35.9%).
+Growth helps a little; maturity is roughly neutral in the folds and is
+kept as a stated prior — a reading that prices a two-week-old protocol
+exactly like a three-year-old one would be hiding an assumption, not
+removing one; category factors change nothing that matters and stay out.
+
+Each board value carries a band: implied ÷/× 7.76, the pooled
+75th-percentile absolute held-out log miss from the 5-fold run — and 76.1%
+of held-out comps indeed land inside their band. Rank ranges come from 200
+bootstrap refits (resample the comps, refit, re-read the whole board):
+each row prints its p10–p90 rank and the share of refits in which its
+verdict class survives.
+
+## Farm economics
+
+At the standard $2,500 plan: the user pool is 10% of implied value
+(cautious scenario 5%); the farmed share is 25% of TVL split across wallets
+of $250; a plan's expected drop is pool × (½/wallets + ½ × capital/farmed
+TVL) — half the drop spread evenly, half pro-rata. Costs are the step count
+times gas on the protocol's cheapest listed chain (Ethereum $12, BNB Chain
+$1.20, Solana $0.40, Base $0.80, Arbitrum $0.90, Avalanche $0.70, Polygon
+$0.50, Tron $1.00, Sui $0.50, default $2.00) plus a $4.60 on/off-ramp, and
+opportunity cost at 5%/yr over a hold of clamp(730 − age/2, 90, 730) days.
+Verdicts: **FARM** when net ≥ $25 (66 rows), **THIN** when net > $0 (10),
+**SKIP** otherwise (122). The honest pattern the netting exposes: the
+biggest protocols are SKIP at this plan size — their drops are spread over
+so many wallets that forgone yield wins — while the best net per hour,
+MetalX Swap at $65/hour, sits at rank 148 by value.
+
+The detail view shows, per protocol, the line-item build-up (TVL → curve →
+growth → maturity → implied), the three nearest traded comparables by TVL,
+the farm panel with the cautious-scenario net, a sensitivity matrix (user
+shares 3.5%/7%/14% × plans $1,000/$2,500/$10,000), and 8–9 numbered farm
+steps generated from the protocol's category and chains, each with its cost
+in dollars and its time in minutes. A greedy basket over FARM rows by net
+per dollar fills a $10,000 budget with MetalX Swap, SyncSwap, Katana DEX
+and BTCFi CDP for an expected net of $1,257 over 24.2 hours.
+
+## The page
+
+`dashboard/` is a static, offline field guide — warm paper, ink, one teal
+accent, serif display type, mono figures — that renders entirely from
+`data.js` and recomputes every net at the selected plan size ($1,000 /
+$2,500 / $10,000) from the same carried fields `board.json` is written
+from, so page and board cannot drift. The board is the hero: stat strip,
+the fitted formula, the coverage bar over all 758, verdict/watchlist/
+category/chain/search filters, and a table sortable by rank, TVL, 7-day
+change, tracked age, value, net and net per hour. `#farm` opens it filtered
+to FARM sorted by net per hour; `#detail=<slug>` opens a protocol's detail.
